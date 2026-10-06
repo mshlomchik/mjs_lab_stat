@@ -164,6 +164,8 @@ ui <- page_sidebar(
     ),
     sliderInput("axis_angle", "X-axis label angle", min = 0, max = 90, value = 0, step = 15),
     sliderInput("text_size", "Plot text size", min = 8, max = 24, value = 14, step = 1),
+    textInput("x_axis_label", "X-axis label (optional override)", value = "",
+              placeholder = "Leave blank to use the column name"),
     textInput("y_axis_label", "Y-axis label (optional override)", value = "",
               placeholder = "Leave blank to use the column name"),
     conditionalPanel(
@@ -661,7 +663,7 @@ server <- function(input, output, session) {
       geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
       geom_jitter(width = 0.12, size = 1.4, alpha = 0.6, color = "#2C3E50") +
       facet_wrap(~ colname, scales = "free_y") +
-      labs(x = input$group_col %||% "Group",
+      labs(x = (if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")),
            y = (if (nzchar(input$y_axis_label)) input$y_axis_label else "Value"),
            title = "All numeric columns, compared by group") +
       theme_minimal(base_size = input$text_size) +
@@ -690,6 +692,7 @@ server <- function(input, output, session) {
   make_groups_plot <- function() {
     ad <- analysis_data(); ds <- desc_stats()
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col %||% "Value")
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
 
     p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
       geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
@@ -698,7 +701,7 @@ server <- function(input, output, session) {
                     inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
       geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
                  color = "#C0392B", size = 3, shape = 18) +
-      labs(x = input$group_col %||% "Group", y = y_lab,
+      labs(x = x_lab, y = y_lab,
            title = "Group comparison",
            subtitle = "Boxplot with individual points; red diamond = mean +/- SE") +
       theme_minimal(base_size = input$text_size) +
@@ -734,12 +737,13 @@ server <- function(input, output, session) {
   make_groups_plot_2f <- function() {
     ad <- analysis_data_2f()
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col_2f %||% "Value")
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$factor1_col %||% "Factor 1")
 
     ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
       geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
       geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
                  size = 1.8, alpha = 0.6, color = "#2C3E50") +
-      labs(x = input$factor1_col %||% "Factor 1", y = y_lab,
+      labs(x = x_lab, y = y_lab,
            fill = input$factor2_col %||% "Factor 2",
            title = "Two-way comparison",
            subtitle = "Grouped by factor 1, colored by factor 2") +
@@ -751,10 +755,11 @@ server <- function(input, output, session) {
   make_corr_plot <- function() {
     cd <- corr_data()
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$y_col %||% "Y")
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$x_col %||% "X")
 
     p <- ggplot(cd, aes(x = x, y = y)) +
       geom_point(size = 2.5, alpha = 0.7, color = "#2C6E49") +
-      labs(x = input$x_col %||% "X", y = y_lab, title = "Correlation / regression") +
+      labs(x = x_lab, y = y_lab, title = "Correlation / regression") +
       theme_minimal(base_size = input$text_size) +
       axis_angle_theme(input$axis_angle)
     if (isTRUE(input$show_regression)) p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#C0392B")
