@@ -735,6 +735,35 @@
         "Built": "R 4.2.0; ; 2023-08-15 11:39:12 UTC; unix"
       }
     },
+    "ggsignif": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Type": "Package",
+        "Package": "ggsignif",
+        "Title": "Significance Brackets for 'ggplot2'",
+        "Version": "0.6.4",
+        "Authors@R": "\n  c(\n    person(given = \"Constantin\",\n           family = \"Ahlmann-Eltze\",\n           role = c(\"aut\", \"cre\", \"ctb\"),\n           email = \"artjom31415@googlemail.com\",\n           comment = c(ORCID = \"0000-0002-3762-068X\", Twitter = \"@const_ae\")),\n    person(given = \"Indrajeet\",\n           family = \"Patil\",\n           role = c(\"aut\", \"ctb\"),\n           email = \"patilindrajeet.science@gmail.com\",\n           comment = c(ORCID = \"0000-0003-1995-6531\", Twitter = \"@patilindrajeets\"))\n  )",
+        "Description": "Enrich your 'ggplots' with group-wise comparisons.\n    This package provides an easy way to indicate if two groups are\n    significantly different. Commonly this is shown by a bracket on top\n    connecting the groups of interest which itself is annotated with the\n    level of significance (NS, *, **, ***).  The package provides a single\n    layer (geom_signif()) that takes the groups for comparison and the\n    test (t.test(), wilcox.text() etc.) as arguments and adds the\n    annotation to the plot.",
+        "License": "GPL-3 | file LICENSE",
+        "URL": "https://const-ae.github.io/ggsignif/,\nhttps://github.com/const-ae/ggsignif",
+        "VignetteBuilder": "knitr",
+        "Encoding": "UTF-8",
+        "Language": "en-US",
+        "Imports": "ggplot2 (>= 3.3.5)",
+        "Suggests": "knitr, rmarkdown, testthat, vdiffr (>= 1.0.2)",
+        "RoxygenNote": "7.2.1",
+        "Config/testthat/edition": "3",
+        "Config/testthat/parallel": "true",
+        "NeedsCompilation": "no",
+        "Packaged": "2022-10-13 13:31:09 UTC; ahlmanne",
+        "Author": "Constantin Ahlmann-Eltze [aut, cre, ctb]\n    (<https://orcid.org/0000-0002-3762-068X>, @const_ae),\n  Indrajeet Patil [aut, ctb] (<https://orcid.org/0000-0003-1995-6531>,\n    @patilindrajeets)",
+        "Maintainer": "Constantin Ahlmann-Eltze <artjom31415@googlemail.com>",
+        "Repository": "CRAN",
+        "Date/Publication": "2022-10-13 14:41:57 UTC",
+        "Built": "R 4.2.0; ; 2022-10-14 12:11:11 UTC; unix"
+      }
+    },
     "glue": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -2133,8 +2162,14 @@
     }
   },
   "files": {
+    "9.3.26 T cells.csv": {
+      "checksum": "9d4b6f8fe9ad2608b73ea83f4ed34ca4"
+    },
     "app.R": {
-      "checksum": "f0b34cf2ed7b23fb1072a0b82c80e89e"
+      "checksum": "27bf0c54b8625dc5c4d9beb9627e657c"
+    },
+    "readme.R": {
+      "checksum": "cd8d97c7fc9d58497628dcfe7fe65a4c"
     }
   },
   "users": null

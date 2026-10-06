@@ -9,15 +9,19 @@
 #           parametric    -> t-test (2 groups) / one-way ANOVA + Tukey (3+)
 #           non-parametric-> Wilcoxon (2 groups) / Kruskal-Wallis +
 #                             pairwise Wilcoxon post-hoc (3+)
+#           -> plot automatically shows p-value brackets for 2, 3, or 4
+#              groups (all pairwise comparisons)
 #       - Two grouping factors (Two-way ANOVA):
 #           parametric only -> main effects + interaction + Tukey HSD
-#             on every term (factor1, factor2, factor1:factor2)
 #  2. Correlation & regression -> Pearson/Spearman correlation and
 #     simple linear regression between two numeric variables
 #
+# Plot customization: color palette and x-axis label angle, available
+# for any plot.
+#
 # HOW TO RUN:
 #   install.packages(c("shiny","bslib","readxl","dplyr","tidyr",
-#                       "ggplot2","DT"))
+#                       "ggplot2","DT","ggsignif"))
 #   shiny::runApp("app.R")
 # ============================================================
 
@@ -28,10 +32,37 @@ library(dplyr)
 library(tidyr)
 library(ggplot2)
 library(DT)
+library(ggsignif)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
 `%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || a == "") b else a
+
+format_p <- function(p) {
+  if (is.na(p)) return("NA")
+  if (p < 0.001) return("p < 0.001")
+  paste0("p = ", formatC(p, digits = 3, format = "f"))
+}
+
+get_fill_scale <- function(palette) {
+  switch(palette,
+    "Viridis"  = scale_fill_viridis_d(),
+    "Set1"     = scale_fill_brewer(palette = "Set1"),
+    "Set2"     = scale_fill_brewer(palette = "Set2"),
+    "Dark2"    = scale_fill_brewer(palette = "Dark2"),
+    "Paired"   = scale_fill_brewer(palette = "Paired"),
+    "Pastel1"  = scale_fill_brewer(palette = "Pastel1"),
+    NULL  # "Default" -> ggplot default colors
+  )
+}
+
+axis_angle_theme <- function(angle) {
+  if (angle == 0) {
+    theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+  } else {
+    theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 1))
+  }
+}
 
 # ---------------------------------------------------------
 # UI
@@ -59,6 +90,20 @@ ui <- page_sidebar(
     hr(),
     numericInput("alpha", "Significance level (alpha)", value = 0.05,
                  min = 0.001, max = 0.5, step = 0.01),
+    hr(),
+
+    h5("Plot options"),
+    selectInput(
+      "palette", "Color palette",
+      choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1"),
+      selected = "Default"
+    ),
+    sliderInput("axis_angle", "X-axis label angle", min = 0, max = 90, value = 0, step = 15),
+    conditionalPanel(
+      "input.analysis_mode == 'groups' && input.group_design != 'two'",
+      checkboxInput("show_pvalues", "Show p-value brackets on plot (2-4 groups)", value = TRUE)
+    ),
+
     helpText("Upload a file, choose an analysis type, then pick the ",
              "relevant columns below.")
   ),
@@ -353,6 +398,30 @@ server <- function(input, output, session) {
     }
   })
 
+  # Pairwise p-values for plot brackets (works for 2, 3, or 4 groups)
+  pairwise_pvalues <- reactive({
+    tr <- test_result()
+    if (tr$type %in% c("t-test", "wilcoxon")) {
+      g <- levels(analysis_data()$group)
+      data.frame(group1 = g[1], group2 = g[2], p = tr$result$p.value, stringsAsFactors = FALSE)
+    } else if (tr$type == "anova") {
+      tk <- as.data.frame(tr$posthoc$group)
+      comp <- strsplit(rownames(tk), "-")
+      data.frame(
+        group1 = sapply(comp, `[`, 2),
+        group2 = sapply(comp, `[`, 1),
+        p = tk[["p adj"]],
+        stringsAsFactors = FALSE
+      )
+    } else if (tr$type == "kruskal") {
+      pm <- tr$posthoc$p.value
+      out <- as.data.frame(as.table(pm), stringsAsFactors = FALSE)
+      names(out) <- c("group2", "group1", "p")
+      out <- out[!is.na(out$p), c("group1", "group2", "p")]
+      out
+    }
+  })
+
   # =========================================================
   # TWO-FACTOR group comparisons (Two-way ANOVA)
   # =========================================================
@@ -512,7 +581,8 @@ server <- function(input, output, session) {
   # =========================================================
   make_groups_plot <- function() {
     ad <- analysis_data(); ds <- desc_stats()
-    ggplot(ad, aes(x = group, y = value, fill = group)) +
+
+    p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
       geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
       geom_jitter(width = 0.12, size = 2, alpha = 0.7, color = "#2C3E50") +
       geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
@@ -522,7 +592,32 @@ server <- function(input, output, session) {
       labs(x = input$group_col %||% "Group", y = input$value_col %||% "Value",
            title = "Group comparison",
            subtitle = "Boxplot with individual points; red diamond = mean +/- SE") +
-      theme_minimal(base_size = 14) + theme(legend.position = "none")
+      theme_minimal(base_size = 14) +
+      theme(legend.position = "none") +
+      get_fill_scale(input$palette) +
+      axis_angle_theme(input$axis_angle)
+
+    n <- n_groups()
+    if (isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
+      pw <- pairwise_pvalues()
+      comparisons <- Map(c, pw$group1, pw$group2)
+      annotations <- sapply(pw$p, format_p)
+
+      data_range <- max(ad$value, na.rm = TRUE) - min(ad$value, na.rm = TRUE)
+      base_y <- max(ad$value, na.rm = TRUE)
+      step <- data_range * 0.12
+      y_positions <- base_y + step * seq_len(nrow(pw))
+
+      p <- p + geom_signif(
+        comparisons = comparisons,
+        annotations = annotations,
+        y_position  = y_positions,
+        tip_length  = 0.01,
+        textsize    = 3.6,
+        vjust       = -0.2
+      )
+    }
+    p
   }
 
   make_groups_plot_2f <- function() {
@@ -535,7 +630,9 @@ server <- function(input, output, session) {
            fill = input$factor2_col %||% "Factor 2",
            title = "Two-way comparison",
            subtitle = "Grouped by factor 1, colored by factor 2") +
-      theme_minimal(base_size = 14)
+      theme_minimal(base_size = 14) +
+      get_fill_scale(input$palette) +
+      axis_angle_theme(input$axis_angle)
   }
 
   make_corr_plot <- function() {
@@ -543,7 +640,8 @@ server <- function(input, output, session) {
     p <- ggplot(cd, aes(x = x, y = y)) +
       geom_point(size = 2.5, alpha = 0.7, color = "#2C6E49") +
       labs(x = input$x_col %||% "X", y = input$y_col %||% "Y", title = "Correlation / regression") +
-      theme_minimal(base_size = 14)
+      theme_minimal(base_size = 14) +
+      axis_angle_theme(input$axis_angle)
     if (isTRUE(input$show_regression)) p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#C0392B")
     p
   }
