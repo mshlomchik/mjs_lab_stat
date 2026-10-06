@@ -1,18 +1,24 @@
 # ============================================================
 # Lab Stats Explorer
-# A Shiny app for descriptive statistics and group comparisons
-# (t-test / ANOVA) on biological lab-experiment data
-# (e.g. cell assays, enzyme kinetics, dose-response readouts).
+# A Shiny app for flexible statistics on biological lab-experiment
+# data (e.g. sorted cell populations, cell assays, enzyme kinetics).
+#
+# Analysis modes:
+#  1. Compare groups
+#       - One grouping factor:
+#           parametric    -> t-test (2 groups) / one-way ANOVA + Tukey (3+)
+#           non-parametric-> Wilcoxon (2 groups) / Kruskal-Wallis +
+#                             pairwise Wilcoxon post-hoc (3+)
+#       - Two grouping factors (Two-way ANOVA):
+#           parametric only -> main effects + interaction + Tukey HSD
+#             on every term (factor1, factor2, factor1:factor2)
+#  2. Correlation & regression -> Pearson/Spearman correlation and
+#     simple linear regression between two numeric variables
 #
 # HOW TO RUN:
-#   1. install.packages(c("shiny","bslib","readxl","dplyr",
-#                          "ggplot2","DT","tidyr","broom"))
-#   2. shiny::runApp("app.R")
-#
-# INPUT DATA FORMAT (long format):
-#   One column = grouping variable (e.g. "Treatment": Control, DrugA, DrugB)
-#   One column = numeric measurement (e.g. "Absorbance", "Activity")
-#   One row per replicate/sample.
+#   install.packages(c("shiny","bslib","readxl","dplyr","tidyr",
+#                       "ggplot2","DT"))
+#   shiny::runApp("app.R")
 # ============================================================
 
 library(shiny)
@@ -25,6 +31,8 @@ library(DT)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
+`%||%` <- function(a, b) if (is.null(a) || length(a) == 0 || a == "") b else a
+
 # ---------------------------------------------------------
 # UI
 # ---------------------------------------------------------
@@ -33,41 +41,84 @@ ui <- page_sidebar(
   theme = bs_theme(version = 5, primary = "#2C6E49", base_font = font_google("Inter")),
 
   sidebar = sidebar(
-    width = 340,
+    width = 380,
     fileInput("datafile", "Upload data (CSV or Excel)",
               accept = c(".csv", ".xlsx", ".xls")),
     checkboxInput("header", "File has column headers", value = TRUE),
     hr(),
-    uiOutput("col_selectors"),
+
+    radioButtons(
+      "analysis_mode", "Analysis type",
+      choices = c("Compare groups" = "groups",
+                  "Correlation & regression" = "corr"),
+      selected = "groups"
+    ),
+    hr(),
+
+    uiOutput("mode_ui"),
     hr(),
     numericInput("alpha", "Significance level (alpha)", value = 0.05,
                  min = 0.001, max = 0.5, step = 0.01),
-    conditionalPanel(
-      condition = "output.is_two_group == 'yes'",
-      checkboxInput("paired", "Paired samples", value = FALSE),
-      checkboxInput("equal_var", "Assume equal variances", value = FALSE)
-    ),
-    hr(),
-    helpText("Upload a file, then pick which column identifies your groups ",
-             "(e.g. Treatment) and which column holds the numeric measurement ",
-             "(e.g. Absorbance, Enzyme Activity).")
+    helpText("Upload a file, choose an analysis type, then pick the ",
+             "relevant columns below.")
   ),
 
   navset_card_tab(
     nav_panel("Data Preview", DTOutput("data_preview")),
-    nav_panel("Descriptive Stats", DTOutput("desc_table")),
+
     nav_panel(
-      "Test Results",
-      verbatimTextOutput("test_summary"),
+      "Descriptive Stats",
+      conditionalPanel("input.analysis_mode == 'groups' && input.group_design != 'two'",
+                        DTOutput("desc_table")),
+      conditionalPanel("input.analysis_mode == 'groups' && input.group_design == 'two'",
+                        DTOutput("desc_table_2f")),
+      conditionalPanel("input.analysis_mode == 'corr'", DTOutput("corr_desc_table"))
+    ),
+
+    nav_panel(
+      "Normality Check",
       conditionalPanel(
-        condition = "output.is_anova == 'yes'",
-        h5("Tukey HSD post-hoc comparisons"),
-        DTOutput("tukey_table")
+        "input.analysis_mode == 'groups' && input.group_design != 'two'",
+        helpText("Shapiro-Wilk test per group. p < 0.05 suggests the data ",
+                 "deviate from a normal distribution -- consider a ",
+                 "non-parametric test in that case."),
+        DTOutput("normality_table")
+      ),
+      conditionalPanel(
+        "input.analysis_mode == 'groups' && input.group_design == 'two'",
+        helpText("Shapiro-Wilk test on the two-way ANOVA model residuals. ",
+                 "p < 0.05 suggests the residuals deviate from normality, ",
+                 "so ANOVA results should be interpreted with some caution."),
+        verbatimTextOutput("normality_2f")
       )
     ),
+
+    nav_panel(
+      "Test Results",
+      conditionalPanel(
+        "input.analysis_mode == 'groups' && input.group_design != 'two'",
+        verbatimTextOutput("test_summary"),
+        conditionalPanel(
+          "output.show_posthoc == 'yes'",
+          h5("Post-hoc pairwise comparisons"),
+          DTOutput("posthoc_table")
+        )
+      ),
+      conditionalPanel(
+        "input.analysis_mode == 'groups' && input.group_design == 'two'",
+        verbatimTextOutput("test_summary_2f"),
+        h5("Tukey HSD post-hoc (main effects + interaction)"),
+        DTOutput("posthoc_table_2f")
+      ),
+      conditionalPanel(
+        "input.analysis_mode == 'corr'",
+        verbatimTextOutput("corr_summary")
+      )
+    ),
+
     nav_panel(
       "Plot",
-      plotOutput("group_plot", height = "500px"),
+      plotOutput("main_plot", height = "500px"),
       downloadButton("download_plot", "Download plot (PNG)")
     )
   )
@@ -98,19 +149,76 @@ server <- function(input, output, session) {
     df
   })
 
-  # ---- Dynamic column selectors ----
-  output$col_selectors <- renderUI({
+  numeric_cols <- reactive({
     df <- raw_data()
-    if (is.null(df)) return(NULL)
-
-    tagList(
-      selectInput("group_col", "Grouping column", choices = names(df)),
-      selectInput("value_col", "Numeric value column", choices = names(df))
-    )
+    req(df)
+    names(df)[sapply(df, function(x) suppressWarnings(!all(is.na(as.numeric(x)))))]
   })
 
-  # ---- Cleaned analysis data: group column as factor, value column numeric ----
+  # ---- Sidebar controls that depend on analysis mode ----
+  output$mode_ui <- renderUI({
+    df <- raw_data()
+    if (is.null(df)) return(helpText("Upload a file to get started."))
+
+    if (input$analysis_mode == "groups") {
+      tagList(
+        radioButtons(
+          "group_design", "Design",
+          choices = c("One grouping factor" = "one",
+                      "Two grouping factors (Two-way ANOVA)" = "two"),
+          selected = "one"
+        ),
+
+        conditionalPanel(
+          "input.group_design == 'one'",
+          selectInput("group_col", "Grouping column", choices = names(df)),
+          selectInput("value_col", "Numeric value column", choices = numeric_cols()),
+          radioButtons(
+            "test_family", "Test type",
+            choices = c("Parametric (t-test / ANOVA)" = "param",
+                        "Non-parametric (Wilcoxon / Kruskal-Wallis)" = "nonparam"),
+            selected = "param"
+          ),
+          conditionalPanel(
+            "output.is_two_group == 'yes' && input.test_family == 'param'",
+            checkboxInput("paired", "Paired samples", value = FALSE),
+            checkboxInput("equal_var", "Assume equal variances", value = FALSE)
+          ),
+          conditionalPanel(
+            "output.is_two_group == 'yes' && input.test_family == 'nonparam'",
+            checkboxInput("paired_np", "Paired samples (signed-rank test)", value = FALSE)
+          )
+        ),
+
+        conditionalPanel(
+          "input.group_design == 'two'",
+          selectInput("factor1_col", "Grouping factor 1", choices = names(df)),
+          selectInput("factor2_col", "Grouping factor 2", choices = names(df)),
+          selectInput("value_col_2f", "Numeric value column", choices = numeric_cols()),
+          helpText("Two-way ANOVA tests the main effect of each factor plus ",
+                   "whether they interact. Parametric only.")
+        )
+      )
+    } else {
+      tagList(
+        selectInput("x_col", "X variable (numeric)", choices = numeric_cols()),
+        selectInput("y_col", "Y variable (numeric)", choices = numeric_cols()),
+        radioButtons(
+          "corr_method", "Correlation method",
+          choices = c("Pearson (linear, parametric)" = "pearson",
+                      "Spearman (rank-based, non-parametric)" = "spearman"),
+          selected = "pearson"
+        ),
+        checkboxInput("show_regression", "Fit simple linear regression line", value = TRUE)
+      )
+    }
+  })
+
+  # =========================================================
+  # ONE-FACTOR group comparisons
+  # =========================================================
   analysis_data <- reactive({
+    req(input$analysis_mode == "groups", input$group_design == "one")
     df <- raw_data()
     req(df, input$group_col, input$value_col)
 
@@ -123,8 +231,9 @@ server <- function(input, output, session) {
 
     validate(need(nrow(out) > 0,
                   "No valid numeric data found in the selected value column."))
-    validate(need(nlevels(out$group) >= 2,
-                  "Need at least 2 groups to run a comparison."))
+    validate(need(nlevels(droplevels(out$group)) >= 2,
+                  "Need at least 2 groups with data to run a comparison."))
+    out$group <- droplevels(out$group)
     out
   })
 
@@ -133,129 +242,325 @@ server <- function(input, output, session) {
   output$is_two_group <- reactive({ if (n_groups() == 2) "yes" else "no" })
   outputOptions(output, "is_two_group", suspendWhenHidden = FALSE)
 
-  output$is_anova <- reactive({ if (n_groups() > 2) "yes" else "no" })
-  outputOptions(output, "is_anova", suspendWhenHidden = FALSE)
+  output$show_posthoc <- reactive({ if (isTRUE(n_groups() > 2)) "yes" else "no" })
+  outputOptions(output, "show_posthoc", suspendWhenHidden = FALSE)
 
-  # ---- Data preview ----
-  output$data_preview <- renderDT({
-    df <- raw_data()
-    req(df)
-    datatable(df, options = list(pageLength = 10, scrollX = TRUE))
-  })
-
-  # ---- Descriptive statistics ----
   desc_stats <- reactive({
     analysis_data() %>%
       group_by(group) %>%
       summarise(
-        n      = n(),
-        mean   = mean(value),
-        sd     = sd(value),
-        se     = sd / sqrt(n),
-        median = median(value),
-        min    = min(value),
-        max    = max(value),
+        n = n(), mean = mean(value), sd = sd(value), se = sd / sqrt(n),
+        median = median(value), min = min(value), max = max(value),
         .groups = "drop"
       ) %>%
       mutate(across(where(is.numeric) & !matches("^n$"), ~ round(.x, 4)))
   })
 
   output$desc_table <- renderDT({
+    req(input$analysis_mode == "groups", input$group_design == "one")
     datatable(desc_stats(), options = list(dom = "t", paging = FALSE))
   })
 
-  # ---- Statistical test (t-test or ANOVA) ----
+  output$normality_table <- renderDT({
+    req(input$analysis_mode == "groups", input$group_design == "one")
+    ad <- analysis_data()
+    res <- ad %>%
+      group_by(group) %>%
+      summarise(
+        n = n(),
+        shapiro_p = if (n() >= 3 && n() <= 5000) {
+          tryCatch(shapiro.test(value)$p.value, error = function(e) NA_real_)
+        } else NA_real_,
+        .groups = "drop"
+      ) %>%
+      mutate(
+        shapiro_p = round(shapiro_p, 4),
+        interpretation = case_when(
+          is.na(shapiro_p) ~ "Not enough data (need n >= 3)",
+          shapiro_p < input$alpha ~ "Deviates from normal -> consider non-parametric",
+          TRUE ~ "Consistent with normal distribution"
+        )
+      )
+    datatable(res, options = list(dom = "t", paging = FALSE))
+  })
+
   test_result <- reactive({
     ad <- analysis_data()
+    family <- input$test_family %||% "param"
 
     if (n_groups() == 2) {
-      res <- t.test(
-        value ~ group,
-        data   = ad,
-        paired = isTRUE(input$paired),
-        var.equal = isTRUE(input$equal_var)
-      )
-      list(type = "t-test", result = res)
+      if (family == "param") {
+        res <- t.test(value ~ group, data = ad,
+                       paired = isTRUE(input$paired), var.equal = isTRUE(input$equal_var))
+        list(type = "t-test", result = res)
+      } else {
+        if (isTRUE(input$paired_np)) {
+          g <- levels(ad$group)
+          v1 <- ad$value[ad$group == g[1]]; v2 <- ad$value[ad$group == g[2]]
+          validate(need(length(v1) == length(v2),
+                        "Paired Wilcoxon requires equal sample sizes in both groups."))
+          res <- wilcox.test(v1, v2, paired = TRUE)
+        } else {
+          res <- wilcox.test(value ~ group, data = ad)
+        }
+        list(type = "wilcoxon", result = res)
+      }
     } else {
-      fit <- aov(value ~ group, data = ad)
-      list(type = "anova", result = fit, tukey = TukeyHSD(fit))
+      if (family == "param") {
+        fit <- aov(value ~ group, data = ad)
+        list(type = "anova", result = fit, posthoc = TukeyHSD(fit))
+      } else {
+        res <- kruskal.test(value ~ group, data = ad)
+        ph  <- pairwise.wilcox.test(ad$value, ad$group, p.adjust.method = "BH")
+        list(type = "kruskal", result = res, posthoc = ph)
+      }
     }
   })
 
   output$test_summary <- renderPrint({
-    tr <- test_result()
-    alpha <- input$alpha
-
-    if (tr$type == "t-test") {
-      print(tr$result)
+    tr <- test_result(); alpha <- input$alpha
+    report_p <- function(p, label) {
       cat("\n---\n")
-      if (tr$result$p.value < alpha) {
-        cat(sprintf("Result: p = %.4g < alpha (%.3g) -> statistically significant difference between groups.\n",
-                    tr$result$p.value, alpha))
-      } else {
-        cat(sprintf("Result: p = %.4g >= alpha (%.3g) -> no statistically significant difference detected.\n",
-                    tr$result$p.value, alpha))
-      }
-    } else {
+      if (p < alpha) cat(sprintf("Result: p = %.4g < alpha (%.3g) -> statistically significant %s.\n", p, alpha, label))
+      else cat(sprintf("Result: p = %.4g >= alpha (%.3g) -> no statistically significant %s.\n", p, alpha, label))
+    }
+    if (tr$type == "t-test") { print(tr$result); report_p(tr$result$p.value, "difference between groups") }
+    else if (tr$type == "wilcoxon") { print(tr$result); report_p(tr$result$p.value, "difference between groups") }
+    else if (tr$type == "anova") {
       print(summary(tr$result))
-      cat("\n---\n")
-      p_val <- summary(tr$result)[[1]][["Pr(>F)"]][1]
-      if (p_val < alpha) {
-        cat(sprintf("Result: p = %.4g < alpha (%.3g) -> at least one group differs. See Tukey HSD tab for pairwise comparisons.\n",
-                    p_val, alpha))
-      } else {
-        cat(sprintf("Result: p = %.4g >= alpha (%.3g) -> no statistically significant difference detected among groups.\n",
-                    p_val, alpha))
-      }
+      report_p(summary(tr$result)[[1]][["Pr(>F)"]][1], "difference among groups (see post-hoc tab)")
+    } else if (tr$type == "kruskal") {
+      print(tr$result)
+      report_p(tr$result$p.value, "difference among groups (see post-hoc tab)")
     }
   })
 
-  output$tukey_table <- renderDT({
-    tr <- test_result()
-    req(tr$type == "anova")
-    tk <- as.data.frame(tr$tukey$group)
-    tk$comparison <- rownames(tk)
-    tk <- tk[, c("comparison", "diff", "lwr", "upr", "p adj")]
-    tk[ , c("diff","lwr","upr","p adj")] <- round(tk[ , c("diff","lwr","upr","p adj")], 4)
-    datatable(tk, options = list(dom = "t", paging = FALSE))
+  output$posthoc_table <- renderDT({
+    tr <- test_result(); req(!is.null(tr$posthoc))
+    if (tr$type == "anova") {
+      tk <- as.data.frame(tr$posthoc$group)
+      tk$comparison <- rownames(tk)
+      tk <- tk[, c("comparison", "diff", "lwr", "upr", "p adj")]
+      tk[, c("diff", "lwr", "upr", "p adj")] <- round(tk[, c("diff", "lwr", "upr", "p adj")], 4)
+      datatable(tk, options = list(dom = "t", paging = FALSE))
+    } else if (tr$type == "kruskal") {
+      pm <- tr$posthoc$p.value
+      out <- as.data.frame(as.table(pm))
+      names(out) <- c("group1", "group2", "p_adj")
+      out <- out[!is.na(out$p_adj), ]
+      out$p_adj <- round(out$p_adj, 4)
+      datatable(out, options = list(dom = "t", paging = FALSE))
+    }
   })
 
-  # ---- Plot ----
-  make_plot <- function() {
-    ad <- analysis_data()
-    ds <- desc_stats()
+  # =========================================================
+  # TWO-FACTOR group comparisons (Two-way ANOVA)
+  # =========================================================
+  analysis_data_2f <- reactive({
+    req(input$analysis_mode == "groups", input$group_design == "two")
+    df <- raw_data()
+    req(df, input$factor1_col, input$factor2_col, input$value_col_2f)
 
+    out <- df %>%
+      transmute(
+        factor1 = as.factor(.data[[input$factor1_col]]),
+        factor2 = as.factor(.data[[input$factor2_col]]),
+        value   = suppressWarnings(as.numeric(.data[[input$value_col_2f]]))
+      ) %>%
+      filter(!is.na(factor1), !is.na(factor2), !is.na(value))
+
+    validate(need(nrow(out) > 0, "No valid numeric data found in the selected value column."))
+    out$factor1 <- droplevels(out$factor1)
+    out$factor2 <- droplevels(out$factor2)
+    validate(need(nlevels(out$factor1) >= 2 && nlevels(out$factor2) >= 2,
+                  "Each grouping factor needs at least 2 levels for a two-way ANOVA."))
+    out
+  })
+
+  two_way_fit <- reactive({
+    ad <- analysis_data_2f()
+    aov(value ~ factor1 * factor2, data = ad)
+  })
+
+  output$desc_table_2f <- renderDT({
+    ad <- analysis_data_2f()
+    out <- ad %>%
+      group_by(factor1, factor2) %>%
+      summarise(n = n(), mean = mean(value), sd = sd(value), se = sd / sqrt(n),
+                median = median(value), min = min(value), max = max(value),
+                .groups = "drop") %>%
+      mutate(across(where(is.numeric) & !matches("^n$"), ~ round(.x, 4)))
+    datatable(out, options = list(dom = "t", paging = FALSE))
+  })
+
+  output$normality_2f <- renderPrint({
+    fit <- two_way_fit()
+    resid_vals <- residuals(fit)
+    if (length(resid_vals) >= 3 && length(resid_vals) <= 5000) {
+      st <- shapiro.test(resid_vals)
+      print(st)
+      cat("\n---\n")
+      if (st$p.value < input$alpha) {
+        cat("Residuals deviate from normality -- interpret the ANOVA with some caution ",
+            "(consider transforming the data, e.g. log-transform).\n")
+      } else {
+        cat("Residuals are consistent with a normal distribution.\n")
+      }
+    } else {
+      cat("Not enough data points to run a normality check (need 3-5000 residuals).\n")
+    }
+  })
+
+  output$test_summary_2f <- renderPrint({
+    fit <- two_way_fit()
+    s <- summary(fit)
+    print(s)
+
+    tbl <- s[[1]]
+    pvals <- tbl[["Pr(>F)"]]
+    terms <- trimws(rownames(tbl))
+    alpha <- input$alpha
+
+    cat("\n---\n")
+    for (i in seq_along(terms)) {
+      if (terms[i] == "Residuals" || is.na(pvals[i])) next
+      label <- switch(terms[i],
+        "factor1" = paste("Main effect of", input$factor1_col),
+        "factor2" = paste("Main effect of", input$factor2_col),
+        "factor1:factor2" = paste("Interaction between", input$factor1_col, "and", input$factor2_col),
+        terms[i]
+      )
+      if (pvals[i] < alpha) {
+        cat(sprintf("%s: p = %.4g < alpha (%.3g) -> statistically significant.\n", label, pvals[i], alpha))
+      } else {
+        cat(sprintf("%s: p = %.4g >= alpha (%.3g) -> not statistically significant.\n", label, pvals[i], alpha))
+      }
+    }
+    cat("\nIf the interaction is significant, interpret the two main effects with caution --\n")
+    cat("the effect of one factor depends on the level of the other. Check the Plot tab\n")
+    cat("to visualize the interaction.\n")
+  })
+
+  output$posthoc_table_2f <- renderDT({
+    fit <- two_way_fit()
+    tk <- TukeyHSD(fit)
+
+    all_terms <- lapply(names(tk), function(term_name) {
+      d <- as.data.frame(tk[[term_name]])
+      d$comparison <- rownames(d)
+      d$term <- term_name
+      d[, c("term", "comparison", "diff", "lwr", "upr", "p adj")]
+    })
+    out <- do.call(rbind, all_terms)
+    out[, c("diff", "lwr", "upr", "p adj")] <- round(out[, c("diff", "lwr", "upr", "p adj")], 4)
+    datatable(out, options = list(pageLength = 15, scrollX = TRUE))
+  })
+
+  # =========================================================
+  # Correlation & regression
+  # =========================================================
+  corr_data <- reactive({
+    req(input$analysis_mode == "corr", input$x_col, input$y_col)
+    df <- raw_data()
+    x <- suppressWarnings(as.numeric(df[[input$x_col]]))
+    y <- suppressWarnings(as.numeric(df[[input$y_col]]))
+    out <- data.frame(x = x, y = y)
+    out <- out[complete.cases(out), ]
+    validate(need(nrow(out) >= 3, "Need at least 3 complete numeric pairs to run a correlation."))
+    out
+  })
+
+  output$corr_desc_table <- renderDT({
+    req(input$analysis_mode == "corr", input$x_col, input$y_col)
+    df <- raw_data()
+    x <- suppressWarnings(as.numeric(df[[input$x_col]]))
+    y <- suppressWarnings(as.numeric(df[[input$y_col]]))
+    keep <- !is.na(x) & !is.na(y); x <- x[keep]; y <- y[keep]
+    out <- data.frame(
+      variable = c(input$x_col, input$y_col), n = c(length(x), length(y)),
+      mean = round(c(mean(x), mean(y)), 4), sd = round(c(sd(x), sd(y)), 4),
+      median = round(c(median(x), median(y)), 4),
+      min = round(c(min(x), min(y)), 4), max = round(c(max(x), max(y)), 4)
+    )
+    datatable(out, options = list(dom = "t", paging = FALSE))
+  })
+
+  output$corr_summary <- renderPrint({
+    cd <- corr_data(); method <- input$corr_method %||% "pearson"
+    ct <- cor.test(cd$x, cd$y, method = method)
+    print(ct)
+    cat("\n---\n")
+    if (ct$p.value < input$alpha) {
+      cat(sprintf("Result: p = %.4g < alpha (%.3g) -> statistically significant %s correlation.\n",
+                  ct$p.value, input$alpha, method))
+    } else {
+      cat(sprintf("Result: p = %.4g >= alpha (%.3g) -> no statistically significant %s correlation.\n",
+                  ct$p.value, input$alpha, method))
+    }
+    if (isTRUE(input$show_regression)) {
+      fit <- lm(y ~ x, data = cd); s <- summary(fit)
+      cat("\n--- Simple linear regression (y ~ x) ---\n")
+      cat(sprintf("Slope     : %.4f\n", coef(fit)[2]))
+      cat(sprintf("Intercept : %.4f\n", coef(fit)[1]))
+      cat(sprintf("R-squared : %.4f\n", s$r.squared))
+      cat(sprintf("Model p-value : %.4g\n", pf(s$fstatistic[1], s$fstatistic[2], s$fstatistic[3], lower.tail = FALSE)))
+    }
+  })
+
+  # =========================================================
+  # Plots
+  # =========================================================
+  make_groups_plot <- function() {
+    ad <- analysis_data(); ds <- desc_stats()
     ggplot(ad, aes(x = group, y = value, fill = group)) +
       geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
       geom_jitter(width = 0.12, size = 2, alpha = 0.7, color = "#2C3E50") +
-      geom_errorbar(
-        data = ds,
-        aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
-        inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8
-      ) +
-      geom_point(
-        data = ds, aes(x = group, y = mean),
-        inherit.aes = FALSE, color = "#C0392B", size = 3, shape = 18
-      ) +
-      labs(
-        x = input$group_col %||% "Group",
-        y = input$value_col %||% "Value",
-        title = "Group comparison",
-        subtitle = "Boxplot with individual points; red diamond = mean +/- SE"
-      ) +
-      theme_minimal(base_size = 14) +
-      theme(legend.position = "none")
+      geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                    inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
+      geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
+                 color = "#C0392B", size = 3, shape = 18) +
+      labs(x = input$group_col %||% "Group", y = input$value_col %||% "Value",
+           title = "Group comparison",
+           subtitle = "Boxplot with individual points; red diamond = mean +/- SE") +
+      theme_minimal(base_size = 14) + theme(legend.position = "none")
   }
 
-  `%||%` <- function(a, b) if (is.null(a)) b else a
+  make_groups_plot_2f <- function() {
+    ad <- analysis_data_2f()
+    ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
+      geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
+      geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
+                 size = 1.8, alpha = 0.6, color = "#2C3E50") +
+      labs(x = input$factor1_col %||% "Factor 1", y = input$value_col_2f %||% "Value",
+           fill = input$factor2_col %||% "Factor 2",
+           title = "Two-way comparison",
+           subtitle = "Grouped by factor 1, colored by factor 2") +
+      theme_minimal(base_size = 14)
+  }
 
-  output$group_plot <- renderPlot({ make_plot() })
+  make_corr_plot <- function() {
+    cd <- corr_data()
+    p <- ggplot(cd, aes(x = x, y = y)) +
+      geom_point(size = 2.5, alpha = 0.7, color = "#2C6E49") +
+      labs(x = input$x_col %||% "X", y = input$y_col %||% "Y", title = "Correlation / regression") +
+      theme_minimal(base_size = 14)
+    if (isTRUE(input$show_regression)) p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#C0392B")
+    p
+  }
+
+  make_plot <- function() {
+    if (input$analysis_mode == "groups") {
+      if (input$group_design == "two") make_groups_plot_2f() else make_groups_plot()
+    } else {
+      make_corr_plot()
+    }
+  }
+
+  output$main_plot <- renderPlot({ make_plot() })
 
   output$download_plot <- downloadHandler(
-    filename = function() "group_comparison_plot.png",
-    content  = function(file) {
-      ggsave(file, plot = make_plot(), width = 8, height = 6, dpi = 300)
-    }
+    filename = function() "lab_stats_plot.png",
+    content  = function(file) ggsave(file, plot = make_plot(), width = 8, height = 6, dpi = 300)
   )
 }
 
