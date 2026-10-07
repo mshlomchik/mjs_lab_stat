@@ -84,6 +84,21 @@ axis_angle_theme <- function(angle) {
   else theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 1))
 }
 
+# Builds a label with a small (?) icon that shows `tip` text on hover.
+# Use this in place of a plain string wherever an input's `label = ` argument
+# is set, to give the person a short explanation of what that option does.
+tooltip_label <- function(text, tip, placement = "right") {
+  tagList(
+    text,
+    tooltip(
+      trigger = icon("circle-question",
+                      style = "font-size:0.8em; color:#888; margin-left:5px; cursor:help;"),
+      tip,
+      placement = placement
+    )
+  )
+}
+
 # Run a group comparison test (omnibus + chosen multiple-comparison method)
 # on an arbitrary (group, value) data frame. Returns NULL on failure.
 run_group_test <- function(ad, family, posthoc_method,
@@ -186,13 +201,19 @@ ui <- page_sidebar(
 
   sidebar = sidebar(
     width = 400,
-    fileInput("datafile", "Upload data (CSV or Excel)",
+    fileInput("datafile",
+              tooltip_label("Upload data (CSV or Excel)",
+                             "Each row should be one sample/replicate; each column a variable (e.g. group, treatment, measurement)."),
               accept = c(".csv", ".xlsx", ".xls")),
-    checkboxInput("header", "File has column headers", value = TRUE),
+    checkboxInput("header",
+                  tooltip_label("File has column headers",
+                                 "Check this if the first row of your file contains column names rather than data."),
+                  value = TRUE),
     hr(),
 
     radioButtons(
-      "analysis_mode", "Analysis type",
+      "analysis_mode",
+      tooltip_label("Analysis type", "Choose what kind of statistical analysis to run on your data."),
       choices = c("Compare groups" = "groups",
                   "Correlation & regression" = "corr",
                   "Survival analysis" = "survival",
@@ -203,26 +224,44 @@ ui <- page_sidebar(
 
     uiOutput("mode_ui"),
     hr(),
-    numericInput("alpha", "Significance level (alpha)", value = 0.05,
-                 min = 0.001, max = 0.5, step = 0.01),
+    numericInput("alpha",
+                 tooltip_label("Significance level (alpha)",
+                                "The p-value threshold below which a result is called statistically significant. 0.05 is the conventional default."),
+                 value = 0.05, min = 0.001, max = 0.5, step = 0.01),
     hr(),
 
     h5("Plot options"),
     selectInput(
-      "palette", "Color palette",
+      "palette",
+      tooltip_label("Color palette", "The color scheme used for groups/lines in the plot."),
       choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1"),
       selected = "Default"
     ),
-    sliderInput("axis_angle", "X-axis label angle", min = 0, max = 90, value = 0, step = 15),
-    sliderInput("text_size", "Plot text size", min = 8, max = 24, value = 14, step = 1),
-    textInput("x_axis_label", "X-axis label (optional override)", value = "",
-              placeholder = "Leave blank to use the column name"),
-    textInput("y_axis_label", "Y-axis label (optional override)", value = "",
-              placeholder = "Leave blank to use the column name"),
+    sliderInput("axis_angle",
+                tooltip_label("X-axis label angle",
+                               "Rotate the x-axis text -- helpful when category names are long and overlap each other."),
+                min = 0, max = 90, value = 0, step = 15),
+    sliderInput("text_size",
+                tooltip_label("Plot text size", "Font size for titles, axis labels, and legends in the plot."),
+                min = 8, max = 24, value = 14, step = 1),
+    textInput("x_axis_label",
+              tooltip_label("X-axis label (optional override)",
+                             "Type your own x-axis label. Leave blank to auto-use the column name."),
+              value = "", placeholder = "Leave blank to use the column name"),
+    textInput("y_axis_label",
+              tooltip_label("Y-axis label (optional override)",
+                             "Type your own y-axis label. Leave blank to auto-use the column name."),
+              value = "", placeholder = "Leave blank to use the column name"),
     conditionalPanel(
       "input.analysis_mode == 'groups' && input.group_design != 'two'",
-      checkboxInput("show_pvalues", "Show p-value brackets on plot (2-4 groups)", value = TRUE),
-      checkboxInput("plot_all_cols", "Plot ALL numeric columns at once (faceted)", value = FALSE)
+      checkboxInput("show_pvalues",
+                    tooltip_label("Show p-value brackets on plot (2-4 groups)",
+                                   "Draws brackets with the p-value for every pairwise group comparison directly on the plot."),
+                    value = TRUE),
+      checkboxInput("plot_all_cols",
+                    tooltip_label("Plot ALL numeric columns at once (faceted)",
+                                   "Instead of one chosen column, shows every other numeric column in your file as its own mini comparison plot."),
+                    value = FALSE)
     ),
 
     helpText("Upload a file, choose an analysis type, then pick the ",
@@ -341,7 +380,9 @@ server <- function(input, output, session) {
     if (input$analysis_mode == "groups") {
       tagList(
         radioButtons(
-          "group_design", "Design",
+          "group_design",
+          tooltip_label("Design",
+                         "One factor compares groups along a single variable. Two factors tests two variables plus whether they interact (two-way ANOVA)."),
           choices = c("One grouping factor" = "one",
                       "Two grouping factors (Two-way ANOVA)" = "two"),
           selected = "one"
@@ -349,33 +390,49 @@ server <- function(input, output, session) {
 
         conditionalPanel(
           "input.group_design == 'one'",
-          selectInput("group_col", "Grouping column", choices = names(df)),
-          selectInput("value_col", "Numeric value column", choices = numeric_cols()),
+          selectInput("group_col",
+                      tooltip_label("Grouping column", "The column that defines which group each row belongs to (e.g. Treatment, Tissue, Genotype)."),
+                      choices = names(df)),
+          selectInput("value_col",
+                      tooltip_label("Numeric value column", "The measurement you want to compare across groups."),
+                      choices = numeric_cols()),
           radioButtons(
-            "test_family", "Test type",
+            "test_family",
+            tooltip_label("Test type",
+                           "Parametric tests (t-test/ANOVA) assume normally distributed data. Non-parametric tests make no such assumption -- check the Normality Check tab if unsure which to use."),
             choices = c("Parametric (t-test / ANOVA)" = "param",
                         "Non-parametric (Wilcoxon / Kruskal-Wallis)" = "nonparam"),
             selected = "param"
           ),
           conditionalPanel(
             "output.is_two_group == 'yes' && input.test_family == 'param'",
-            checkboxInput("paired", "Paired samples", value = FALSE),
-            checkboxInput("equal_var", "Assume equal variances", value = FALSE)
+            checkboxInput("paired",
+                          tooltip_label("Paired samples", "Check this if the same subjects were measured in both groups (e.g. before/after treatment)."),
+                          value = FALSE),
+            checkboxInput("equal_var",
+                          tooltip_label("Assume equal variances", "Check this if you believe both groups have similar spread/variability. Leave unchecked for the safer Welch's t-test."),
+                          value = FALSE)
           ),
           conditionalPanel(
             "output.is_two_group == 'yes' && input.test_family == 'nonparam'",
-            checkboxInput("paired_np", "Paired samples (signed-rank test)", value = FALSE)
+            checkboxInput("paired_np",
+                          tooltip_label("Paired samples (signed-rank test)", "Check this if the same subjects were measured in both groups."),
+                          value = FALSE)
           ),
           conditionalPanel(
             "output.show_posthoc == 'yes' && input.test_family == 'param'",
-            selectInput("posthoc_method_param", "Multiple comparison method",
+            selectInput("posthoc_method_param",
+                        tooltip_label("Multiple comparison method",
+                                       "How to adjust for testing multiple group pairs at once, to control false positives. Tukey HSD is the standard default."),
                         choices = c("Tukey HSD" = "tukey",
                                     "Pairwise t-test (Bonferroni)" = "bonf"),
                         selected = "tukey")
           ),
           conditionalPanel(
             "output.show_posthoc == 'yes' && input.test_family == 'nonparam'",
-            selectInput("posthoc_method_nonparam", "Multiple comparison method",
+            selectInput("posthoc_method_nonparam",
+                        tooltip_label("Multiple comparison method",
+                                       "How to adjust for testing multiple group pairs at once. Dunn's test is the standard non-parametric choice."),
                         choices = c("Dunn's test (BH-adjusted)" = "dunn_bh",
                                     "Pairwise Wilcoxon (BH-adjusted)" = "wilcox_bh",
                                     "Pairwise Wilcoxon (Bonferroni)" = "wilcox_bonf"),
@@ -385,39 +442,65 @@ server <- function(input, output, session) {
 
         conditionalPanel(
           "input.group_design == 'two'",
-          selectInput("factor1_col", "Grouping factor 1", choices = names(df)),
-          selectInput("factor2_col", "Grouping factor 2", choices = names(df)),
-          selectInput("value_col_2f", "Numeric value column", choices = numeric_cols()),
+          selectInput("factor1_col",
+                      tooltip_label("Grouping factor 1", "The first categorical variable to test (e.g. Tissue)."),
+                      choices = names(df)),
+          selectInput("factor2_col",
+                      tooltip_label("Grouping factor 2", "The second categorical variable to test (e.g. Treatment). The app also tests whether factor 1 and factor 2 interact."),
+                      choices = names(df)),
+          selectInput("value_col_2f",
+                      tooltip_label("Numeric value column", "The measurement you want to compare across both factors."),
+                      choices = numeric_cols()),
           helpText("Two-way ANOVA tests the main effect of each factor plus ",
                    "whether they interact. Parametric only (Tukey HSD post-hoc).")
         )
       )
     } else if (input$analysis_mode == "corr") {
       tagList(
-        selectInput("x_col", "X variable (numeric)", choices = numeric_cols()),
-        selectInput("y_col", "Y variable (numeric)", choices = numeric_cols()),
+        selectInput("x_col",
+                    tooltip_label("X variable (numeric)", "The variable plotted on the horizontal axis."),
+                    choices = numeric_cols()),
+        selectInput("y_col",
+                    tooltip_label("Y variable (numeric)", "The variable plotted on the vertical axis."),
+                    choices = numeric_cols()),
         radioButtons(
-          "corr_method", "Correlation method",
+          "corr_method",
+          tooltip_label("Correlation method",
+                         "Pearson measures linear correlation and assumes roughly normal data. Spearman measures rank-based (monotonic) correlation and is more robust to outliers/non-linear trends."),
           choices = c("Pearson (linear, parametric)" = "pearson",
                       "Spearman (rank-based, non-parametric)" = "spearman"),
           selected = "pearson"
         ),
-        checkboxInput("show_regression", "Fit simple linear regression line", value = TRUE)
+        checkboxInput("show_regression",
+                      tooltip_label("Fit simple linear regression line", "Fits a straight line through the data and reports its slope, intercept, and R-squared."),
+                      value = TRUE)
       )
     } else if (input$analysis_mode == "survival") {
       tagList(
-        selectInput("surv_time_col", "Time column", choices = numeric_cols()),
-        selectInput("surv_status_col", "Event/status column", choices = names(df)),
+        selectInput("surv_time_col",
+                    tooltip_label("Time column", "How long each subject was followed, in whatever time unit your data uses (e.g. days)."),
+                    choices = numeric_cols()),
+        selectInput("surv_status_col",
+                    tooltip_label("Event/status column", "Indicates whether the event (e.g. death) occurred, or the subject was censored (survived to the end of follow-up / left the study)."),
+                    choices = names(df)),
         helpText("Status should be coded 1 = event occurred, 0 = censored."),
-        selectInput("surv_group_col", "Grouping column (optional)",
+        selectInput("surv_group_col",
+                    tooltip_label("Grouping column (optional)", "If provided, plots a separate survival curve per group and runs a log-rank test comparing them."),
                     choices = c("None", names(df)), selected = "None")
       )
     } else {
       tagList(
-        selectInput("dose_col", "Dose / concentration column (X)", choices = numeric_cols()),
-        selectInput("response_col", "Response column (Y)", choices = numeric_cols()),
-        checkboxInput("log_dose", "Log10-transform dose (recommended)", value = TRUE),
-        selectInput("titration_group_col", "Grouping column (optional, separate curve per group)",
+        selectInput("dose_col",
+                    tooltip_label("Dose / concentration column (X)", "The dose, concentration, or titration variable."),
+                    choices = numeric_cols()),
+        selectInput("response_col",
+                    tooltip_label("Response column (Y)", "The measured response at each dose (e.g. % viability, signal intensity)."),
+                    choices = numeric_cols()),
+        checkboxInput("log_dose",
+                      tooltip_label("Log10-transform dose (recommended)", "Standard practice for titrations where doses span orders of magnitude -- makes the curve shape and EC50 estimate more reliable."),
+                      value = TRUE),
+        selectInput("titration_group_col",
+                    tooltip_label("Grouping column (optional, separate curve per group)", "If provided, fits and plots a separate dose-response curve for each group (e.g. comparing two drugs)."),
                     choices = c("None", names(df)), selected = "None")
       )
     }
