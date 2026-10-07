@@ -44,6 +44,8 @@ library(dunn.test)
 library(survival)
 library(gridExtra)
 library(grid)
+library(colourpicker)
+library(scales)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
@@ -55,7 +57,8 @@ format_p <- function(p) {
   paste0("p = ", formatC(p, digits = 3, format = "f"))
 }
 
-get_fill_scale <- function(palette) {
+get_fill_scale <- function(palette, custom_colors = NULL) {
+  if (palette == "Custom" && !is.null(custom_colors)) return(scale_fill_manual(values = custom_colors))
   switch(palette,
     "Viridis"  = scale_fill_viridis_d(),
     "Set1"     = scale_fill_brewer(palette = "Set1"),
@@ -67,7 +70,8 @@ get_fill_scale <- function(palette) {
   )
 }
 
-get_color_scale <- function(palette) {
+get_color_scale <- function(palette, custom_colors = NULL) {
+  if (palette == "Custom" && !is.null(custom_colors)) return(scale_color_manual(values = custom_colors))
   switch(palette,
     "Viridis"  = scale_color_viridis_d(),
     "Set1"     = scale_color_brewer(palette = "Set1"),
@@ -237,9 +241,13 @@ ui <- page_sidebar(
     h5("Plot options"),
     selectInput(
       "palette",
-      tooltip_label("Color palette", "The color scheme used for groups/lines in the plot."),
-      choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1"),
+      tooltip_label("Color palette", "The color scheme used for groups/lines in the plot. Choose \"Custom\" to pick each group's color yourself."),
+      choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1", "Custom"),
       selected = "Default"
+    ),
+    conditionalPanel(
+      "input.palette == 'Custom'",
+      uiOutput("custom_color_ui")
     ),
     sliderInput("axis_angle",
                 tooltip_label("X-axis label angle",
@@ -372,6 +380,52 @@ server <- function(input, output, session) {
 
   output$file_uploaded <- reactive({ if (!is.null(raw_data())) "yes" else "no" })
   outputOptions(output, "file_uploaded", suspendWhenHidden = FALSE)
+
+  # The set of categories currently being colored/filled in the plot --
+  # used to generate one color picker per category when "Custom" palette
+  # is selected.
+  current_group_levels <- reactive({
+    tryCatch({
+      if (input$analysis_mode == "groups") {
+        if (input$group_design == "two") levels(analysis_data_2f()$factor2)
+        else levels(analysis_data()$group)
+      } else if (input$analysis_mode == "survival") {
+        levels(surv_data()$group)
+      } else if (input$analysis_mode == "titration") {
+        levels(titration_data()$group)
+      } else {
+        character(0)
+      }
+    }, error = function(e) character(0))
+  })
+
+  output$custom_color_ui <- renderUI({
+    levels_vec <- current_group_levels()
+    if (length(levels_vec) == 0) return(helpText("Select your data/columns above to choose colors per group."))
+    default_cols <- scales::hue_pal()(length(levels_vec))
+    tagList(
+      lapply(seq_along(levels_vec), function(i) {
+        colourpicker::colourInput(
+          paste0("custom_color_", make.names(levels_vec[i])),
+          label = levels_vec[i],
+          value = default_cols[i]
+        )
+      })
+    )
+  })
+
+  # Builds the named color vector (level -> hex) from the current color
+  # picker inputs, for use with scale_fill_manual()/scale_color_manual().
+  get_custom_colors <- function(levels_vec) {
+    if (length(levels_vec) == 0) return(NULL)
+    cols <- sapply(levels_vec, function(lv) {
+      id <- paste0("custom_color_", make.names(lv))
+      val <- input[[id]]
+      if (is.null(val) || !nzchar(val)) "#888888" else val
+    })
+    names(cols) <- levels_vec
+    cols
+  }
 
   output$data_preview <- renderDT({
     df <- raw_data()
@@ -873,7 +927,7 @@ server <- function(input, output, session) {
       labs(x = x_lab, y = y_lab, color = input$surv_group_col %||% "Group",
            title = "Kaplan-Meier survival curve") +
       theme_minimal(base_size = input$text_size) +
-      get_color_scale(input$palette) +
+      get_color_scale(input$palette, get_custom_colors(unique(sfit_df$strata))) +
       axis_angle_theme(input$axis_angle)
   }
 
@@ -973,7 +1027,7 @@ server <- function(input, output, session) {
       labs(x = x_lab, y = y_lab, color = input$titration_group_col %||% "Group",
            title = "Titration / dose-response curve") +
       theme_minimal(base_size = input$text_size) +
-      get_color_scale(input$palette) +
+      get_color_scale(input$palette, get_custom_colors(levels(td$group))) +
       axis_angle_theme(input$axis_angle)
   }
 
@@ -1043,7 +1097,7 @@ server <- function(input, output, session) {
       labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group") +
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
-      get_fill_scale(input$palette) +
+      get_fill_scale(input$palette, get_custom_colors(levels(droplevels(df$group)))) +
       axis_angle_theme(input$axis_angle)
 
     n <- n_groups()
@@ -1081,7 +1135,7 @@ server <- function(input, output, session) {
            subtitle = "Boxplot with individual points; red diamond = mean +/- SE") +
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
-      get_fill_scale(input$palette) +
+      get_fill_scale(input$palette, get_custom_colors(levels(ad$group))) +
       axis_angle_theme(input$axis_angle)
 
     n <- n_groups()
@@ -1122,7 +1176,7 @@ server <- function(input, output, session) {
            title = "Two-way comparison",
            subtitle = "Grouped by factor 1, colored by factor 2") +
       theme_minimal(base_size = input$text_size) +
-      get_fill_scale(input$palette) +
+      get_fill_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
       axis_angle_theme(input$axis_angle)
   }
 
