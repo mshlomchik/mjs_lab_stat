@@ -42,6 +42,8 @@ library(DT)
 library(ggsignif)
 library(dunn.test)
 library(survival)
+library(gridExtra)
+library(grid)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
@@ -288,7 +290,8 @@ ui <- page_sidebar(
     nav_panel(
       "Plot",
       plotOutput("main_plot", height = "600px"),
-      downloadButton("download_plot", "Download plot (PNG)")
+      downloadButton("download_plot", "Download plot (PNG)"),
+      downloadButton("download_report", "Download Report (PDF)")
     )
   )
 )
@@ -322,6 +325,12 @@ server <- function(input, output, session) {
     df <- raw_data()
     req(df)
     names(df)[sapply(df, function(x) suppressWarnings(!all(is.na(as.numeric(x)))))]
+  })
+
+  output$data_preview <- renderDT({
+    df <- raw_data()
+    req(df)
+    datatable(df, options = list(pageLength = 10, scrollX = TRUE))
   })
 
   # ---- Sidebar controls that depend on analysis mode ----
@@ -1064,6 +1073,111 @@ server <- function(input, output, session) {
       w <- if (wide) 12 else 8
       h <- if (wide) 9 else 6
       ggsave(file, plot = make_plot(), width = w, height = h, dpi = 300)
+    }
+  )
+
+  # =========================================================
+  # PDF report (plot + descriptive stats + test results)
+  # Reports the currently-selected single analysis; does not cover the
+  # "plot all columns" faceted view (that one is PNG-only).
+  # =========================================================
+  report_title <- function() {
+    if (input$analysis_mode == "groups") {
+      if (input$group_design == "two") "Two-Way ANOVA Report" else "Group Comparison Report"
+    } else if (input$analysis_mode == "corr") "Correlation & Regression Report"
+    else if (input$analysis_mode == "survival") "Survival Analysis Report"
+    else "Dose-Response Report"
+  }
+
+  report_desc_table <- function() {
+    if (input$analysis_mode == "groups") {
+      if (input$group_design == "two") as.data.frame(analysis_data_2f() %>%
+          group_by(factor1, factor2) %>%
+          summarise(n = n(), mean = round(mean(value), 4), sd = round(sd(value), 4),
+                    .groups = "drop"))
+      else as.data.frame(desc_stats())
+    } else if (input$analysis_mode == "corr") {
+      cd <- corr_data()
+      data.frame(
+        variable = c(input$x_col, input$y_col), n = c(nrow(cd), nrow(cd)),
+        mean = round(c(mean(cd$x), mean(cd$y)), 4), sd = round(c(sd(cd$x), sd(cd$y)), 4)
+      )
+    } else if (input$analysis_mode == "survival") {
+      sd <- surv_data()
+      as.data.frame(sd %>% group_by(group) %>% group_modify(~ {
+        fit_g <- survival::survfit(survival::Surv(time, status) ~ 1, data = .x)
+        s <- summary(fit_g)$table
+        med <- if ("median" %in% names(s)) unname(s["median"]) else NA
+        data.frame(n = nrow(.x), events = sum(.x$status == 1), median_survival = round(med, 4))
+      }) %>% ungroup())
+    } else {
+      as.data.frame(titration_fits())
+    }
+  }
+
+  report_text_lines <- function() {
+    capture.output({
+      if (input$analysis_mode == "groups" && input$group_design == "one") {
+        tr <- test_result(); alpha <- input$alpha
+        if (tr$type == "t-test" || tr$type == "wilcoxon") print(tr$result)
+        else if (tr$type == "anova") print(summary(tr$result))
+        else if (tr$type == "kruskal") print(tr$result)
+        pw <- extract_pairwise(tr, levels(analysis_data()$group))
+        if (nrow(pw) > 0) {
+          cat("\n--- Multiple comparisons ---\n")
+          pw$p <- round(pw$p, 4)
+          print(pw)
+        }
+      } else if (input$analysis_mode == "groups" && input$group_design == "two") {
+        fit <- two_way_fit()
+        print(summary(fit))
+      } else if (input$analysis_mode == "corr") {
+        cd <- corr_data(); method <- input$corr_method %||% "pearson"
+        print(cor.test(cd$x, cd$y, method = method))
+        if (isTRUE(input$show_regression)) {
+          fit <- lm(y ~ x, data = cd); print(summary(fit))
+        }
+      } else if (input$analysis_mode == "survival") {
+        sd <- surv_data(); fit <- surv_fit()
+        print(summary(fit)$table)
+        if (nlevels(sd$group) > 1) print(survival::survdiff(survival::Surv(time, status) ~ group, data = sd))
+      } else {
+        print(titration_fits())
+      }
+    })
+  }
+
+  output$download_report <- downloadHandler(
+    filename = function() "lab_stats_report.pdf",
+    content  = function(file) {
+      pdf(file, width = 8.5, height = 11)
+
+      # Page 1: title + plot
+      grid.newpage()
+      print(make_plot())
+
+      # Page 2: descriptive stats table
+      desc_df <- tryCatch(report_desc_table(), error = function(e) NULL)
+      if (!is.null(desc_df) && nrow(desc_df) > 0) {
+        grid.newpage()
+        grid.arrange(tableGrob(desc_df, rows = NULL), top = "Descriptive Statistics")
+      }
+
+      # Page 3+: test results text, paginated
+      lines <- tryCatch(report_text_lines(), error = function(e) character())
+      if (length(lines) > 0) {
+        lines_per_page <- 55
+        chunks <- split(lines, ceiling(seq_along(lines) / lines_per_page))
+        for (chunk in chunks) {
+          grid.newpage()
+          grid.text(paste(chunk, collapse = "\n"),
+                     x = unit(0.04, "npc"), y = unit(0.97, "npc"),
+                     just = c("left", "top"),
+                     gp = gpar(fontfamily = "mono", fontsize = 8))
+        }
+      }
+
+      dev.off()
     }
   )
 }

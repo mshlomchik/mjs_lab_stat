@@ -818,6 +818,30 @@
         "Archs": "glue.so.dSYM"
       }
     },
+    "gridExtra": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "gridExtra",
+        "Authors@R": "c(person(\"Baptiste\", \"Auguie\",\n    email = \"baptiste.auguie@gmail.com\",\n    role = c(\"aut\", \"cre\")), person(\"Anton\", \"Antonov\",\n    email = \"tonytonov@gmail.com\",\n    role = c(\"ctb\")))",
+        "License": "GPL (>= 2)",
+        "Title": "Miscellaneous Functions for \"Grid\" Graphics",
+        "Type": "Package",
+        "Description": "Provides a number of user-level functions to work with \"grid\"\n    graphics, notably to arrange multiple grid-based plots on a page, and draw\n    tables.",
+        "Version": "2.3",
+        "VignetteBuilder": "knitr",
+        "Imports": "gtable, grid, grDevices, graphics, utils",
+        "Suggests": "ggplot2, egg, lattice, knitr, testthat",
+        "RoxygenNote": "6.0.1",
+        "NeedsCompilation": "no",
+        "Packaged": "2017-09-08 22:52:09 UTC; baptiste",
+        "Author": "Baptiste Auguie [aut, cre],\n  Anton Antonov [ctb]",
+        "Maintainer": "Baptiste Auguie <baptiste.auguie@gmail.com>",
+        "Repository": "CRAN",
+        "Date/Publication": "2017-09-09 14:12:08 UTC",
+        "Built": "R 4.2.0; ; 2022-04-25 03:21:44 UTC; unix"
+      }
+    },
     "gtable": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -2217,7 +2241,25 @@
       "checksum": "9d4b6f8fe9ad2608b73ea83f4ed34ca4"
     },
     "app.R": {
-      "checksum": "1eca47460134fdc9b3d7194e4296e7cd"
+      "checksum": "0f57f53cfde5c8101578f9ab41ce0655"
+    },
+    "dummydata_manual/Lab_Stats_Explorer_Tutorial.md": {
+      "checksum": "885ca34d4a470f0980a6d765e334e2a1"
+    },
+    "dummydata_manual/tutorial_1_groups_one_factor.csv": {
+      "checksum": "dfbfd2b97395a9726a8c25e0c4bd8038"
+    },
+    "dummydata_manual/tutorial_2_groups_two_factor.csv": {
+      "checksum": "8de461ce2300698a060efcc6084f9c5d"
+    },
+    "dummydata_manual/tutorial_3_correlation.csv": {
+      "checksum": "6ee713ca084beb3eba017881f370448e"
+    },
+    "dummydata_manual/tutorial_4_survival.csv": {
+      "checksum": "1574d042bcb6efbcf593edba21e3dcb0"
+    },
+    "dummydata_manual/tutorial_5_titration.csv": {
+      "checksum": "5d681f960297d2ce9c0d4830c6c54710"
     },
     "readme.R": {
       "checksum": "cd8d97c7fc9d58497628dcfe7fe65a4c"
