@@ -197,7 +197,8 @@ extract_pairwise <- function(tr, group_levels) {
 # ---------------------------------------------------------
 ui <- page_sidebar(
   title = "Lab Stats Explorer",
-  theme = bs_theme(version = 5, primary = "#2C6E49", base_font = font_google("Inter")),
+  theme = bs_theme(version = 5, primary = "#2C6E49", base_font = font_google("Inter"),
+                    font_size_base = "0.85rem"),
 
   sidebar = sidebar(
     width = 400,
@@ -222,8 +223,11 @@ ui <- page_sidebar(
     ),
     hr(),
 
-    uiOutput("mode_ui"),
-    hr(),
+    conditionalPanel(
+      "output.file_uploaded == 'yes'",
+      uiOutput("mode_ui"),
+      hr()
+    ),
     numericInput("alpha",
                  tooltip_label("Significance level (alpha)",
                                 "The p-value threshold below which a result is called statistically significant. 0.05 is the conventional default."),
@@ -366,6 +370,9 @@ server <- function(input, output, session) {
     names(df)[sapply(df, function(x) suppressWarnings(!all(is.na(as.numeric(x)))))]
   })
 
+  output$file_uploaded <- reactive({ if (!is.null(raw_data())) "yes" else "no" })
+  outputOptions(output, "file_uploaded", suspendWhenHidden = FALSE)
+
   output$data_preview <- renderDT({
     df <- raw_data()
     req(df)
@@ -375,7 +382,7 @@ server <- function(input, output, session) {
   # ---- Sidebar controls that depend on analysis mode ----
   output$mode_ui <- renderUI({
     df <- raw_data()
-    if (is.null(df)) return(helpText("Upload a file to get started."))
+    if (is.null(df)) return(NULL)
 
     if (input$analysis_mode == "groups") {
       tagList(
