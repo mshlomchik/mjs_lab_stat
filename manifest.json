@@ -475,6 +475,29 @@
         "Archs": "dplyr.so.dSYM"
       }
     },
+    "dunn.test": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Package": "dunn.test",
+        "Version": "1.4.2",
+        "Date": "2026-10-4",
+        "Title": "Dunn's Test of Multiple Comparisons Using Rank Sums",
+        "Authors@R": "c(person(given = \"Alexis\", family =\"Dinno\", role = c(\"aut\", \"cre\", \"cph\"), email = \"alexis.dinno@pdx.edu\", comment = c(ORCID = \"0000-0003-2560-310X\")))",
+        "Imports": "rlang",
+        "Description": "Computes Dunn's test (1964) for stochastic superiority and reports the results among multiple pairwise comparisons after a Kruskal-Wallis test for stochastic superiority among k groups (Kruskal and Wallis, 1952). 'dunn.test' makes k(k-1)/2 multiple pairwise comparisons based on Dunn's z-test-statistic approximations to the actual rank statistics. The null hypothesis for each pairwise comparison is that the probability of observing a randomly selected value from the first group that is larger than a randomly selected value from the second group equals one half; this null hypothesis corresponds to that of the Wilcoxon-Mann-Whitney rank-sum test. 'dunn.test' accounts for tied ranks.",
+        "License": "GPL-2",
+        "LazyData": "true",
+        "Encoding": "UTF-8",
+        "NeedsCompilation": "no",
+        "Packaged": "2026-10-04 21:49:21 UTC; alexis",
+        "Author": "Alexis Dinno [aut, cre, cph] (ORCID:\n    <https://orcid.org/0000-0003-2560-310X>)",
+        "Maintainer": "Alexis Dinno <alexis.dinno@pdx.edu>",
+        "Repository": "CRAN",
+        "Date/Publication": "2026-10-05 02:20:09 UTC",
+        "Built": "R 4.2.1; ; 2026-10-07 03:09:06 UTC; unix"
+      }
+    },
     "ellipsis": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -1843,6 +1866,34 @@
         "Built": "R 4.2.0; ; 2022-12-03 13:12:02 UTC; unix"
       }
     },
+    "survival": {
+      "Source": "CRAN",
+      "Repository": "https://cran.rstudio.com",
+      "description": {
+        "Title": "Survival Analysis",
+        "Priority": "recommended",
+        "Package": "survival",
+        "Version": "3.5-7",
+        "Date": "2023-08-12",
+        "Depends": "R (>= 3.5.0)",
+        "Imports": "graphics, Matrix, methods, splines, stats, utils",
+        "LazyData": "Yes",
+        "LazyDataCompression": "xz",
+        "ByteCompile": "Yes",
+        "Authors@R": "c(person(c(\"Terry\", \"M\"), \"Therneau\",\n                    email=\"therneau.terry@mayo.edu\",\n\t            role=c(\"aut\", \"cre\")),\n               person(\"Thomas\", \"Lumley\", role=c(\"ctb\", \"trl\"),\n\t       comment=\"original S->R port and R maintainer until 2009\"),\n\t       person(\"Atkinson\", \"Elizabeth\", role=\"ctb\"),\n\t       person(\"Crowson\", \"Cynthia\", role=\"ctb\"))",
+        "Description": "Contains the core survival analysis routines, including\n\t     definition of Surv objects, \n\t     Kaplan-Meier and Aalen-Johansen (multi-state) curves, Cox models,\n\t     and parametric accelerated failure time models.",
+        "License": "LGPL (>= 2)",
+        "URL": "https://github.com/therneau/survival",
+        "NeedsCompilation": "yes",
+        "Packaged": "2023-08-13 13:14:48 UTC; therneau",
+        "Author": "Terry M Therneau [aut, cre],\n  Thomas Lumley [ctb, trl] (original S->R port and R maintainer until\n    2009),\n  Atkinson Elizabeth [ctb],\n  Crowson Cynthia [ctb]",
+        "Maintainer": "Terry M Therneau <therneau.terry@mayo.edu>",
+        "Repository": "CRAN",
+        "Date/Publication": "2023-08-14 07:10:03 UTC",
+        "Built": "R 4.2.0; x86_64-apple-darwin17.0; 2023-08-15 11:19:01 UTC; unix",
+        "Archs": "survival.so.dSYM"
+      }
+    },
     "tibble": {
       "Source": "CRAN",
       "Repository": "https://cran.rstudio.com",
@@ -2166,7 +2217,7 @@
       "checksum": "9d4b6f8fe9ad2608b73ea83f4ed34ca4"
     },
     "app.R": {
-      "checksum": "fd040e18e2ddf97a4d56f90714665f83"
+      "checksum": "1eca47460134fdc9b3d7194e4296e7cd"
     },
     "readme.R": {
       "checksum": "cd8d97c7fc9d58497628dcfe7fe65a4c"

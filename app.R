@@ -1,29 +1,34 @@
 # ============================================================
 # Lab Stats Explorer
 # A Shiny app for flexible statistics on biological lab-experiment
-# data (e.g. sorted cell populations, cell assays, enzyme kinetics).
+# data (e.g. sorted cell populations, cell assays, enzyme kinetics,
+# survival studies, dose-response/titration experiments).
 #
 # Analysis modes:
 #  1. Compare groups
 #       - One grouping factor:
-#           parametric    -> t-test (2 groups) / one-way ANOVA + Tukey (3+)
-#           non-parametric-> Wilcoxon (2 groups) / Kruskal-Wallis +
-#                             pairwise Wilcoxon post-hoc (3+)
-#           -> plot automatically shows p-value brackets for 2, 3, or 4
-#              groups (all pairwise comparisons)
-#           -> optional: plot ALL numeric columns at once, faceted,
-#              each with its own p-value brackets
+#           parametric    -> t-test (2 groups) / one-way ANOVA (3+)
+#                             multiple comparisons: Tukey HSD or
+#                             Bonferroni pairwise t-test
+#           non-parametric-> Wilcoxon (2 groups) / Kruskal-Wallis (3+)
+#                             multiple comparisons: Dunn's test (BH),
+#                             pairwise Wilcoxon (BH or Bonferroni)
+#           -> plot shows p-value brackets for 2-4 groups
+#           -> optional: plot ALL numeric columns at once, faceted
 #       - Two grouping factors (Two-way ANOVA):
 #           parametric only -> main effects + interaction + Tukey HSD
-#  2. Correlation & regression -> Pearson/Spearman correlation and
-#     simple linear regression between two numeric variables
+#  2. Correlation & regression -> Pearson/Spearman + simple linear
+#     regression
+#  3. Survival analysis -> Kaplan-Meier curves + log-rank test
+#  4. Titration / dose-response -> four-parameter logistic curve fit
+#     (EC50, Hill-type slope) per group
 #
-# Plot customization: color palette, x-axis label angle, text size,
-# and an optional manual y-axis label override.
+# Plot customization: color palette, x/y axis label override,
+# x-axis label angle, text size.
 #
 # HOW TO RUN:
 #   install.packages(c("shiny","bslib","readxl","dplyr","tidyr",
-#                       "ggplot2","DT","ggsignif"))
+#                       "ggplot2","DT","ggsignif","dunn.test","survival"))
 #   shiny::runApp("app.R")
 # ============================================================
 
@@ -35,6 +40,8 @@ library(tidyr)
 library(ggplot2)
 library(DT)
 library(ggsignif)
+library(dunn.test)
+library(survival)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
@@ -54,31 +61,41 @@ get_fill_scale <- function(palette) {
     "Dark2"    = scale_fill_brewer(palette = "Dark2"),
     "Paired"   = scale_fill_brewer(palette = "Paired"),
     "Pastel1"  = scale_fill_brewer(palette = "Pastel1"),
-    NULL  # "Default" -> ggplot default colors
+    NULL
+  )
+}
+
+get_color_scale <- function(palette) {
+  switch(palette,
+    "Viridis"  = scale_color_viridis_d(),
+    "Set1"     = scale_color_brewer(palette = "Set1"),
+    "Set2"     = scale_color_brewer(palette = "Set2"),
+    "Dark2"    = scale_color_brewer(palette = "Dark2"),
+    "Paired"   = scale_color_brewer(palette = "Paired"),
+    "Pastel1"  = scale_color_brewer(palette = "Pastel1"),
+    NULL
   )
 }
 
 axis_angle_theme <- function(angle) {
-  if (angle == 0) {
-    theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
-  } else {
-    theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 1))
-  }
+  if (angle == 0) theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
+  else theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 1))
 }
 
-# Run a group comparison test on an arbitrary (group, value) data frame.
-# Returns NULL if the test can't be run (too few/many groups, errors, etc).
-run_group_test <- function(ad, family, paired = FALSE, equal_var = FALSE, paired_np = FALSE) {
+# Run a group comparison test (omnibus + chosen multiple-comparison method)
+# on an arbitrary (group, value) data frame. Returns NULL on failure.
+run_group_test <- function(ad, family, posthoc_method,
+                            paired = FALSE, equal_var = FALSE, paired_np = FALSE) {
   ad$group <- droplevels(ad$group)
   n <- nlevels(ad$group)
-  if (n < 2 || n > 4) return(NULL)
+  if (n < 2) return(NULL)
 
   if (n == 2) {
     if (family == "param") {
       res <- tryCatch(t.test(value ~ group, data = ad, paired = paired, var.equal = equal_var),
                        error = function(e) NULL)
       if (is.null(res)) return(NULL)
-      list(type = "t-test", result = res)
+      return(list(type = "t-test", result = res, posthoc = NULL, posthoc_kind = NULL))
     } else {
       if (isTRUE(paired_np)) {
         g <- levels(ad$group)
@@ -89,42 +106,72 @@ run_group_test <- function(ad, family, paired = FALSE, equal_var = FALSE, paired
         res <- tryCatch(wilcox.test(value ~ group, data = ad), error = function(e) NULL)
       }
       if (is.null(res)) return(NULL)
-      list(type = "wilcoxon", result = res)
+      return(list(type = "wilcoxon", result = res, posthoc = NULL, posthoc_kind = NULL))
+    }
+  }
+
+  # 3+ groups
+  if (family == "param") {
+    fit <- tryCatch(aov(value ~ group, data = ad), error = function(e) NULL)
+    if (is.null(fit)) return(NULL)
+    if (posthoc_method == "bonf") {
+      ph <- tryCatch(pairwise.t.test(ad$value, ad$group, p.adjust.method = "bonferroni"),
+                      error = function(e) NULL)
+      list(type = "anova", result = fit, posthoc = ph, posthoc_kind = "pairwise_matrix")
+    } else {
+      ph <- tryCatch(TukeyHSD(fit), error = function(e) NULL)
+      list(type = "anova", result = fit, posthoc = ph, posthoc_kind = "tukey")
     }
   } else {
-    if (family == "param") {
-      fit <- tryCatch(aov(value ~ group, data = ad), error = function(e) NULL)
-      if (is.null(fit)) return(NULL)
-      list(type = "anova", result = fit, posthoc = tryCatch(TukeyHSD(fit), error = function(e) NULL))
-    } else {
-      res <- tryCatch(kruskal.test(value ~ group, data = ad), error = function(e) NULL)
-      if (is.null(res)) return(NULL)
+    res <- tryCatch(kruskal.test(value ~ group, data = ad), error = function(e) NULL)
+    if (is.null(res)) return(NULL)
+    if (posthoc_method == "wilcox_bh") {
       ph <- tryCatch(pairwise.wilcox.test(ad$value, ad$group, p.adjust.method = "BH"),
                       error = function(e) NULL)
-      list(type = "kruskal", result = res, posthoc = ph)
+      list(type = "kruskal", result = res, posthoc = ph, posthoc_kind = "pairwise_matrix")
+    } else if (posthoc_method == "wilcox_bonf") {
+      ph <- tryCatch(pairwise.wilcox.test(ad$value, ad$group, p.adjust.method = "bonferroni"),
+                      error = function(e) NULL)
+      list(type = "kruskal", result = res, posthoc = ph, posthoc_kind = "pairwise_matrix")
+    } else {
+      dt <- tryCatch({
+        invisible(capture.output(
+          out <- dunn.test::dunn.test(ad$value, ad$group, method = "bh",
+                                       table = FALSE, list = FALSE, kw = FALSE)
+        ))
+        out
+      }, error = function(e) NULL)
+      list(type = "kruskal", result = res, posthoc = dt, posthoc_kind = "dunn")
     }
   }
 }
 
 # Extract pairwise group1/group2/p data frame from a run_group_test() result.
 extract_pairwise <- function(tr, group_levels) {
-  if (is.null(tr)) return(data.frame(group1 = character(), group2 = character(), p = numeric()))
+  empty <- data.frame(group1 = character(), group2 = character(), p = numeric())
+  if (is.null(tr)) return(empty)
 
   if (tr$type %in% c("t-test", "wilcoxon")) {
     data.frame(group1 = group_levels[1], group2 = group_levels[2], p = tr$result$p.value,
                stringsAsFactors = FALSE)
-  } else if (tr$type == "anova" && !is.null(tr$posthoc)) {
+  } else if (!is.null(tr$posthoc_kind) && tr$posthoc_kind == "tukey") {
     tk <- as.data.frame(tr$posthoc$group)
     comp <- strsplit(rownames(tk), "-")
     data.frame(group1 = sapply(comp, `[`, 2), group2 = sapply(comp, `[`, 1),
                p = tk[["p adj"]], stringsAsFactors = FALSE)
-  } else if (tr$type == "kruskal" && !is.null(tr$posthoc)) {
+  } else if (!is.null(tr$posthoc_kind) && tr$posthoc_kind == "pairwise_matrix") {
+    if (is.null(tr$posthoc)) return(empty)
     pm <- tr$posthoc$p.value
     out <- as.data.frame(as.table(pm), stringsAsFactors = FALSE)
     names(out) <- c("group2", "group1", "p")
     out[!is.na(out$p), c("group1", "group2", "p")]
+  } else if (!is.null(tr$posthoc_kind) && tr$posthoc_kind == "dunn") {
+    if (is.null(tr$posthoc)) return(empty)
+    comp <- strsplit(tr$posthoc$comparisons, " - ")
+    data.frame(group1 = trimws(sapply(comp, `[`, 1)), group2 = trimws(sapply(comp, `[`, 2)),
+               p = tr$posthoc$P.adjusted, stringsAsFactors = FALSE)
   } else {
-    data.frame(group1 = character(), group2 = character(), p = numeric())
+    empty
   }
 }
 
@@ -136,7 +183,7 @@ ui <- page_sidebar(
   theme = bs_theme(version = 5, primary = "#2C6E49", base_font = font_google("Inter")),
 
   sidebar = sidebar(
-    width = 380,
+    width = 400,
     fileInput("datafile", "Upload data (CSV or Excel)",
               accept = c(".csv", ".xlsx", ".xls")),
     checkboxInput("header", "File has column headers", value = TRUE),
@@ -145,7 +192,9 @@ ui <- page_sidebar(
     radioButtons(
       "analysis_mode", "Analysis type",
       choices = c("Compare groups" = "groups",
-                  "Correlation & regression" = "corr"),
+                  "Correlation & regression" = "corr",
+                  "Survival analysis" = "survival",
+                  "Titration / dose-response" = "titration"),
       selected = "groups"
     ),
     hr(),
@@ -187,7 +236,9 @@ ui <- page_sidebar(
                         DTOutput("desc_table")),
       conditionalPanel("input.analysis_mode == 'groups' && input.group_design == 'two'",
                         DTOutput("desc_table_2f")),
-      conditionalPanel("input.analysis_mode == 'corr'", DTOutput("corr_desc_table"))
+      conditionalPanel("input.analysis_mode == 'corr'", DTOutput("corr_desc_table")),
+      conditionalPanel("input.analysis_mode == 'survival'", DTOutput("surv_summary_table")),
+      conditionalPanel("input.analysis_mode == 'titration'", DTOutput("titration_fit_table"))
     ),
 
     nav_panel(
@@ -205,6 +256,10 @@ ui <- page_sidebar(
                  "p < 0.05 suggests the residuals deviate from normality, ",
                  "so ANOVA results should be interpreted with some caution."),
         verbatimTextOutput("normality_2f")
+      ),
+      conditionalPanel(
+        "input.analysis_mode == 'corr' || input.analysis_mode == 'survival' || input.analysis_mode == 'titration'",
+        helpText("Normality checking is not applicable to this analysis type.")
       )
     ),
 
@@ -215,7 +270,7 @@ ui <- page_sidebar(
         verbatimTextOutput("test_summary"),
         conditionalPanel(
           "output.show_posthoc == 'yes'",
-          h5("Post-hoc pairwise comparisons"),
+          h5("Multiple comparisons"),
           DTOutput("posthoc_table")
         )
       ),
@@ -225,10 +280,9 @@ ui <- page_sidebar(
         h5("Tukey HSD post-hoc (main effects + interaction)"),
         DTOutput("posthoc_table_2f")
       ),
-      conditionalPanel(
-        "input.analysis_mode == 'corr'",
-        verbatimTextOutput("corr_summary")
-      )
+      conditionalPanel("input.analysis_mode == 'corr'", verbatimTextOutput("corr_summary")),
+      conditionalPanel("input.analysis_mode == 'survival'", verbatimTextOutput("surv_test_summary")),
+      conditionalPanel("input.analysis_mode == 'titration'", verbatimTextOutput("titration_summary"))
     ),
 
     nav_panel(
@@ -302,6 +356,21 @@ server <- function(input, output, session) {
           conditionalPanel(
             "output.is_two_group == 'yes' && input.test_family == 'nonparam'",
             checkboxInput("paired_np", "Paired samples (signed-rank test)", value = FALSE)
+          ),
+          conditionalPanel(
+            "output.show_posthoc == 'yes' && input.test_family == 'param'",
+            selectInput("posthoc_method_param", "Multiple comparison method",
+                        choices = c("Tukey HSD" = "tukey",
+                                    "Pairwise t-test (Bonferroni)" = "bonf"),
+                        selected = "tukey")
+          ),
+          conditionalPanel(
+            "output.show_posthoc == 'yes' && input.test_family == 'nonparam'",
+            selectInput("posthoc_method_nonparam", "Multiple comparison method",
+                        choices = c("Dunn's test (BH-adjusted)" = "dunn_bh",
+                                    "Pairwise Wilcoxon (BH-adjusted)" = "wilcox_bh",
+                                    "Pairwise Wilcoxon (Bonferroni)" = "wilcox_bonf"),
+                        selected = "dunn_bh")
           )
         ),
 
@@ -311,10 +380,10 @@ server <- function(input, output, session) {
           selectInput("factor2_col", "Grouping factor 2", choices = names(df)),
           selectInput("value_col_2f", "Numeric value column", choices = numeric_cols()),
           helpText("Two-way ANOVA tests the main effect of each factor plus ",
-                   "whether they interact. Parametric only.")
+                   "whether they interact. Parametric only (Tukey HSD post-hoc).")
         )
       )
-    } else {
+    } else if (input$analysis_mode == "corr") {
       tagList(
         selectInput("x_col", "X variable (numeric)", choices = numeric_cols()),
         selectInput("y_col", "Y variable (numeric)", choices = numeric_cols()),
@@ -325,6 +394,22 @@ server <- function(input, output, session) {
           selected = "pearson"
         ),
         checkboxInput("show_regression", "Fit simple linear regression line", value = TRUE)
+      )
+    } else if (input$analysis_mode == "survival") {
+      tagList(
+        selectInput("surv_time_col", "Time column", choices = numeric_cols()),
+        selectInput("surv_status_col", "Event/status column", choices = names(df)),
+        helpText("Status should be coded 1 = event occurred, 0 = censored."),
+        selectInput("surv_group_col", "Grouping column (optional)",
+                    choices = c("None", names(df)), selected = "None")
+      )
+    } else {
+      tagList(
+        selectInput("dose_col", "Dose / concentration column (X)", choices = numeric_cols()),
+        selectInput("response_col", "Response column (Y)", choices = numeric_cols()),
+        checkboxInput("log_dose", "Log10-transform dose (recommended)", value = TRUE),
+        selectInput("titration_group_col", "Grouping column (optional, separate curve per group)",
+                    choices = c("None", names(df)), selected = "None")
       )
     }
   })
@@ -359,6 +444,11 @@ server <- function(input, output, session) {
 
   output$show_posthoc <- reactive({ if (isTRUE(n_groups() > 2)) "yes" else "no" })
   outputOptions(output, "show_posthoc", suspendWhenHidden = FALSE)
+
+  current_posthoc_method <- reactive({
+    if ((input$test_family %||% "param") == "param") input$posthoc_method_param %||% "tukey"
+    else input$posthoc_method_nonparam %||% "dunn_bh"
+  })
 
   desc_stats <- reactive({
     analysis_data() %>%
@@ -402,7 +492,8 @@ server <- function(input, output, session) {
   test_result <- reactive({
     ad <- analysis_data()
     family <- input$test_family %||% "param"
-    tr <- run_group_test(ad, family, isTRUE(input$paired), isTRUE(input$equal_var), isTRUE(input$paired_np))
+    tr <- run_group_test(ad, family, current_posthoc_method(),
+                          isTRUE(input$paired), isTRUE(input$equal_var), isTRUE(input$paired_np))
     validate(need(!is.null(tr), "Could not run the test on this column (check group sizes)."))
     tr
   })
@@ -418,29 +509,20 @@ server <- function(input, output, session) {
     else if (tr$type == "wilcoxon") { print(tr$result); report_p(tr$result$p.value, "difference between groups") }
     else if (tr$type == "anova") {
       print(summary(tr$result))
-      report_p(summary(tr$result)[[1]][["Pr(>F)"]][1], "difference among groups (see post-hoc tab)")
+      report_p(summary(tr$result)[[1]][["Pr(>F)"]][1], "difference among groups (see multiple comparisons tab)")
     } else if (tr$type == "kruskal") {
       print(tr$result)
-      report_p(tr$result$p.value, "difference among groups (see post-hoc tab)")
+      report_p(tr$result$p.value, "difference among groups (see multiple comparisons tab)")
     }
   })
 
   output$posthoc_table <- renderDT({
-    tr <- test_result(); req(!is.null(tr$posthoc))
-    if (tr$type == "anova") {
-      tk <- as.data.frame(tr$posthoc$group)
-      tk$comparison <- rownames(tk)
-      tk <- tk[, c("comparison", "diff", "lwr", "upr", "p adj")]
-      tk[, c("diff", "lwr", "upr", "p adj")] <- round(tk[, c("diff", "lwr", "upr", "p adj")], 4)
-      datatable(tk, options = list(dom = "t", paging = FALSE))
-    } else if (tr$type == "kruskal") {
-      pm <- tr$posthoc$p.value
-      out <- as.data.frame(as.table(pm))
-      names(out) <- c("group1", "group2", "p_adj")
-      out <- out[!is.na(out$p_adj), ]
-      out$p_adj <- round(out$p_adj, 4)
-      datatable(out, options = list(dom = "t", paging = FALSE))
-    }
+    tr <- test_result()
+    pw <- extract_pairwise(tr, levels(analysis_data()$group))
+    req(nrow(pw) > 0)
+    pw$p <- round(pw$p, 4)
+    names(pw) <- c("group1", "group2", "p_adj")
+    datatable(pw, options = list(dom = "t", paging = FALSE))
   })
 
   # Pairwise p-values for the single-column plot's brackets
@@ -604,6 +686,199 @@ server <- function(input, output, session) {
   })
 
   # =========================================================
+  # Survival analysis
+  # =========================================================
+  surv_data <- reactive({
+    req(input$analysis_mode == "survival")
+    df <- raw_data()
+    req(df, input$surv_time_col, input$surv_status_col)
+
+    time <- suppressWarnings(as.numeric(df[[input$surv_time_col]]))
+    status <- suppressWarnings(as.numeric(df[[input$surv_status_col]]))
+    group <- if (!is.null(input$surv_group_col) && input$surv_group_col != "None") {
+      as.factor(df[[input$surv_group_col]])
+    } else {
+      factor(rep("All", nrow(df)))
+    }
+
+    out <- data.frame(time = time, status = status, group = group)
+    out <- out[complete.cases(out[, c("time", "status")]), ]
+    out$group <- droplevels(out$group)
+    validate(need(nrow(out) > 0, "No valid survival data (check time/status columns)."))
+    validate(need(all(out$status %in% c(0, 1)),
+                  "Status column must be coded 0 (censored) or 1 (event)."))
+    out
+  })
+
+  surv_fit <- reactive({
+    sd <- surv_data()
+    survival::survfit(survival::Surv(time, status) ~ group, data = sd)
+  })
+
+  output$surv_summary_table <- renderDT({
+    sd <- surv_data()
+    out <- sd %>%
+      group_by(group) %>%
+      group_modify(~ {
+        fit_g <- survival::survfit(survival::Surv(time, status) ~ 1, data = .x)
+        s <- summary(fit_g)$table
+        med <- if ("median" %in% names(s)) unname(s["median"]) else NA
+        data.frame(n = nrow(.x), events = sum(.x$status == 1), median_survival = round(med, 4))
+      }) %>%
+      ungroup()
+    datatable(out, options = list(dom = "t", paging = FALSE))
+  })
+
+  output$surv_test_summary <- renderPrint({
+    sd <- surv_data()
+    fit <- surv_fit()
+    cat("--- Kaplan-Meier fit summary table ---\n")
+    print(summary(fit)$table)
+
+    if (nlevels(sd$group) > 1) {
+      test <- survival::survdiff(survival::Surv(time, status) ~ group, data = sd)
+      cat("\n--- Log-rank test (comparing survival curves across groups) ---\n")
+      print(test)
+      p_val <- 1 - pchisq(test$chisq, length(test$n) - 1)
+      cat("\n---\n")
+      if (p_val < input$alpha) {
+        cat(sprintf("Result: p = %.4g < alpha (%.3g) -> statistically significant difference in survival between groups.\n",
+                    p_val, input$alpha))
+      } else {
+        cat(sprintf("Result: p = %.4g >= alpha (%.3g) -> no statistically significant difference in survival between groups.\n",
+                    p_val, input$alpha))
+      }
+    } else {
+      cat("\nNo grouping column selected -- showing a single survival curve (no comparison test run).\n")
+    }
+  })
+
+  make_surv_plot <- function() {
+    fit <- surv_fit()
+    if (!is.null(fit$strata)) {
+      strata_names <- rep(names(fit$strata), fit$strata)
+      strata_names <- gsub("^group=", "", strata_names)
+    } else {
+      strata_names <- rep("All", length(fit$time))
+    }
+    sfit_df <- data.frame(time = fit$time, surv = fit$surv, strata = strata_names)
+    starts <- sfit_df %>% group_by(strata) %>% slice(1) %>% mutate(time = 0, surv = 1)
+    sfit_df <- bind_rows(starts, sfit_df) %>% arrange(strata, time)
+
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$surv_time_col %||% "Time")
+    y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else "Survival probability"
+
+    ggplot(sfit_df, aes(x = time, y = surv, color = strata)) +
+      geom_step(linewidth = 1) +
+      scale_y_continuous(limits = c(0, 1)) +
+      labs(x = x_lab, y = y_lab, color = input$surv_group_col %||% "Group",
+           title = "Kaplan-Meier survival curve") +
+      theme_minimal(base_size = input$text_size) +
+      get_color_scale(input$palette) +
+      axis_angle_theme(input$axis_angle)
+  }
+
+  # =========================================================
+  # Titration / dose-response
+  # =========================================================
+  titration_data <- reactive({
+    req(input$analysis_mode == "titration")
+    df <- raw_data()
+    req(df, input$dose_col, input$response_col)
+
+    dose <- suppressWarnings(as.numeric(df[[input$dose_col]]))
+    response <- suppressWarnings(as.numeric(df[[input$response_col]]))
+    group <- if (!is.null(input$titration_group_col) && input$titration_group_col != "None") {
+      as.factor(df[[input$titration_group_col]])
+    } else {
+      factor(rep("All", nrow(df)))
+    }
+
+    out <- data.frame(dose = dose, response = response, group = group)
+    out <- out[complete.cases(out[, c("dose", "response")]), ]
+
+    if (isTRUE(input$log_dose)) {
+      validate(need(all(out$dose > 0),
+                    "Log10 transform requires all doses > 0. Uncheck the log option or remove non-positive doses."))
+      out$x <- log10(out$dose)
+    } else {
+      out$x <- out$dose
+    }
+    out$group <- droplevels(out$group)
+    validate(need(nrow(out) >= 5, "Need at least 5 valid data points to fit a dose-response curve."))
+    out
+  })
+
+  fit_one_curve <- function(sub) {
+    tryCatch(nls(response ~ SSfpl(x, A, B, xmid, scal), data = sub), error = function(e) NULL)
+  }
+
+  titration_fits <- reactive({
+    td <- titration_data()
+    td %>%
+      group_by(group) %>%
+      group_modify(~ {
+        sub <- .x
+        fit <- fit_one_curve(sub)
+        if (is.null(fit)) {
+          return(data.frame(A = NA, B = NA, xmid = NA, scal = NA, EC50 = NA, R2 = NA,
+                             note = "Fit failed - check data"))
+        }
+        co <- coef(fit)
+        pred <- predict(fit)
+        ss_res <- sum((sub$response - pred)^2)
+        ss_tot <- sum((sub$response - mean(sub$response))^2)
+        r2 <- 1 - ss_res / ss_tot
+        ec50 <- if (isTRUE(input$log_dose)) 10 ^ co["xmid"] else co["xmid"]
+        data.frame(A = round(co["A"], 4), B = round(co["B"], 4), xmid = round(co["xmid"], 4),
+                   scal = round(co["scal"], 4), EC50 = round(unname(ec50), 4), R2 = round(r2, 4),
+                   note = "OK")
+      }) %>%
+      ungroup()
+  })
+
+  output$titration_fit_table <- renderDT({
+    datatable(titration_fits(), options = list(dom = "t", paging = FALSE))
+  })
+
+  output$titration_summary <- renderPrint({
+    cat("Four-parameter logistic fit: response = A + (B - A) / (1 + exp((xmid - x) / scal))\n")
+    cat("  A = bottom asymptote, B = top asymptote\n")
+    cat("  xmid = inflection point", if (isTRUE(input$log_dose)) "(in log10(dose) units)" else "(in dose units)", "\n")
+    cat("  scal = slope factor (smaller = steeper curve)\n")
+    cat("  EC50 = dose at the inflection point (back-transformed to original dose units)\n\n")
+    print(titration_fits())
+  })
+
+  make_titration_plot <- function() {
+    td <- titration_data()
+
+    pred_list <- td %>%
+      group_by(group) %>%
+      group_modify(~ {
+        sub <- .x
+        fit <- fit_one_curve(sub)
+        if (is.null(fit)) return(data.frame(x = numeric(), response = numeric()))
+        xs <- seq(min(sub$x), max(sub$x), length.out = 100)
+        data.frame(x = xs, response = as.numeric(predict(fit, newdata = data.frame(x = xs))))
+      }) %>%
+      ungroup()
+
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else
+      (if (isTRUE(input$log_dose)) paste0("log10(", input$dose_col, ")") else (input$dose_col %||% "Dose"))
+    y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$response_col %||% "Response")
+
+    ggplot(td, aes(x = x, y = response, color = group)) +
+      geom_point(size = 2, alpha = 0.6) +
+      geom_line(data = pred_list, aes(x = x, y = response, color = group), linewidth = 1) +
+      labs(x = x_lab, y = y_lab, color = input$titration_group_col %||% "Group",
+           title = "Titration / dose-response curve") +
+      theme_minimal(base_size = input$text_size) +
+      get_color_scale(input$palette) +
+      axis_angle_theme(input$axis_angle)
+  }
+
+  # =========================================================
   # Multi-column faceted plot (all numeric columns at once)
   # =========================================================
   multi_col_data <- reactive({
@@ -630,6 +905,7 @@ server <- function(input, output, session) {
   multi_col_annotations <- reactive({
     df <- multi_col_data()
     family <- input$test_family %||% "param"
+    method <- current_posthoc_method()
 
     df %>%
       group_by(colname) %>%
@@ -637,7 +913,7 @@ server <- function(input, output, session) {
         sub <- .x
         sub$group <- droplevels(sub$group)
         tr <- tryCatch(
-          run_group_test(sub, family, isTRUE(input$paired), isTRUE(input$equal_var), isTRUE(input$paired_np)),
+          run_group_test(sub, family, method, isTRUE(input$paired), isTRUE(input$equal_var), isTRUE(input$paired_np)),
           error = function(e) NULL
         )
         pw <- extract_pairwise(tr, levels(sub$group))
@@ -658,14 +934,14 @@ server <- function(input, output, session) {
 
   make_multi_col_plot <- function() {
     df <- multi_col_data()
+    x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
+    y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else "Value"
 
     p <- ggplot(df, aes(x = group, y = value, fill = group)) +
       geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
       geom_jitter(width = 0.12, size = 1.4, alpha = 0.6, color = "#2C3E50") +
       facet_wrap(~ colname, scales = "free_y") +
-      labs(x = (if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")),
-           y = (if (nzchar(input$y_axis_label)) input$y_axis_label else "Value"),
-           title = "All numeric columns, compared by group") +
+      labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group") +
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
       get_fill_scale(input$palette) +
@@ -687,7 +963,7 @@ server <- function(input, output, session) {
   }
 
   # =========================================================
-  # Plots
+  # One-factor group comparison plot
   # =========================================================
   make_groups_plot <- function() {
     ad <- analysis_data(); ds <- desc_stats()
@@ -743,8 +1019,7 @@ server <- function(input, output, session) {
       geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
       geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
                  size = 1.8, alpha = 0.6, color = "#2C3E50") +
-      labs(x = x_lab, y = y_lab,
-           fill = input$factor2_col %||% "Factor 2",
+      labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
            title = "Two-way comparison",
            subtitle = "Grouped by factor 1, colored by factor 2") +
       theme_minimal(base_size = input$text_size) +
@@ -768,15 +1043,15 @@ server <- function(input, output, session) {
 
   make_plot <- function() {
     if (input$analysis_mode == "groups") {
-      if (input$group_design == "two") {
-        make_groups_plot_2f()
-      } else if (isTRUE(input$plot_all_cols)) {
-        make_multi_col_plot()
-      } else {
-        make_groups_plot()
-      }
-    } else {
+      if (input$group_design == "two") make_groups_plot_2f()
+      else if (isTRUE(input$plot_all_cols)) make_multi_col_plot()
+      else make_groups_plot()
+    } else if (input$analysis_mode == "corr") {
       make_corr_plot()
+    } else if (input$analysis_mode == "survival") {
+      make_surv_plot()
+    } else {
+      make_titration_plot()
     }
   }
 
@@ -785,8 +1060,9 @@ server <- function(input, output, session) {
   output$download_plot <- downloadHandler(
     filename = function() "lab_stats_plot.png",
     content  = function(file) {
-      w <- if (isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one") 12 else 8
-      h <- if (isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one") 9 else 6
+      wide <- isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one"
+      w <- if (wide) 12 else 8
+      h <- if (wide) 9 else 6
       ggsave(file, plot = make_plot(), width = w, height = h, dpi = 300)
     }
   )
