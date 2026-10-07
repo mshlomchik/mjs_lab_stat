@@ -1235,14 +1235,15 @@ server <- function(input, output, session) {
     content  = function(file) {
       pdf(file, width = 8.5, height = 11)
 
-      # Page 1: title + plot
-      grid.newpage()
+      # Page 1: the plot (opening pdf() already starts on a fresh page,
+      # so no grid.newpage() is needed here -- calling it would skip to a
+      # second blank page before drawing anything)
       print(make_plot())
 
-      # Page 2: descriptive stats table
+      # Page 2: descriptive stats table (grid.arrange() advances to a new
+      # page on its own by default, so no manual grid.newpage() here either)
       desc_df <- tryCatch(report_desc_table(), error = function(e) NULL)
       if (!is.null(desc_df) && nrow(desc_df) > 0) {
-        grid.newpage()
         grid.arrange(tableGrob(desc_df, rows = NULL), top = "Descriptive Statistics")
       }
 
