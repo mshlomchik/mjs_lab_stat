@@ -282,9 +282,18 @@ ui <- page_sidebar(
     conditionalPanel(
       "input.analysis_mode == 'groups'",
       sliderInput("box_width",
-                  tooltip_label("Box/Bar width", "Width of each box or bar. Smaller values add more gap between groups."),
-                  min = 0.2, max = 0.9, value = 0.6, step = 0.05)
+                  tooltip_label("Box/Bar width", "Width of each individual box or bar."),
+                  min = 0.2, max = 0.9, value = 0.6, step = 0.05),
+      sliderInput("category_spacing",
+                  tooltip_label("Space between groups", "Controls the gap left on either side of the groups and between them, independent of box/bar width. Lower = groups pulled closer together; higher = more spread out."),
+                  min = 0, max = 0.4, value = 0.1, step = 0.05)
     ),
+    sliderInput("plot_width_px",
+                tooltip_label("Plot width (pixels)", "Overall width of the plot. Narrowing this (along with a smaller box/bar width) keeps things looking compact instead of scattered."),
+                min = 400, max = 1400, value = 800, step = 50),
+    sliderInput("plot_height_px",
+                tooltip_label("Plot height (pixels)", "Overall height of the plot."),
+                min = 300, max = 900, value = 500, step = 50),
     colourpicker::colourInput("axis_color",
                                tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
                                value = "#000000"),
@@ -388,7 +397,7 @@ ui <- page_sidebar(
 
     nav_panel(
       "Plot",
-      plotOutput("main_plot", height = "600px"),
+      plotOutput("main_plot"),
       downloadButton("download_plot", "Download plot (PNG)"),
       downloadButton("download_plot_svg", "Download plot (SVG)"),
       downloadButton("download_report", "Download Report (PDF)")
@@ -1166,6 +1175,7 @@ server <- function(input, output, session) {
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(droplevels(df$group)))) +
+      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
       axis_angle_theme(input$axis_angle) +
       extra_style_theme(input$axis_color, input$hide_gridlines) +
       log_y_scale(input$log_y_axis)
@@ -1219,6 +1229,7 @@ server <- function(input, output, session) {
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$group))) +
+      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
       axis_angle_theme(input$axis_angle) +
       extra_style_theme(input$axis_color, input$hide_gridlines) +
       log_y_scale(input$log_y_axis)
@@ -1279,6 +1290,7 @@ server <- function(input, output, session) {
     p +
       theme_minimal(base_size = input$text_size) +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
+      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
       axis_angle_theme(input$axis_angle) +
       extra_style_theme(input$axis_color, input$hide_gridlines) +
       log_y_scale(input$log_y_axis)
@@ -1314,25 +1326,36 @@ server <- function(input, output, session) {
     }
   }
 
-  output$main_plot <- renderPlot({ make_plot() })
+  output$main_plot <- renderPlot(
+    { make_plot() },
+    width  = function() input$plot_width_px %||% 800,
+    height = function() input$plot_height_px %||% 500
+  )
+
+  # Converts the on-screen pixel width/height (at ~96 px/inch) to inches for
+  # ggsave, so downloaded files match what's shown on screen. The "wide"
+  # multi-column view gets extra width/height on top of that, since it has
+  # many small facets that need the room regardless of the slider settings.
+  export_dimensions <- function() {
+    wide <- isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one"
+    w <- (input$plot_width_px %||% 800) / 96 * (if (wide) 1.5 else 1)
+    h <- (input$plot_height_px %||% 500) / 96 * (if (wide) 1.5 else 1)
+    list(w = w, h = h)
+  }
 
   output$download_plot <- downloadHandler(
     filename = function() "lab_stats_plot.png",
     content  = function(file) {
-      wide <- isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one"
-      w <- if (wide) 12 else 8
-      h <- if (wide) 9 else 6
-      ggsave(file, plot = make_plot(), width = w, height = h, dpi = 300)
+      d <- export_dimensions()
+      ggsave(file, plot = make_plot(), width = d$w, height = d$h, dpi = 300)
     }
   )
 
   output$download_plot_svg <- downloadHandler(
     filename = function() "lab_stats_plot.svg",
     content  = function(file) {
-      wide <- isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one"
-      w <- if (wide) 12 else 8
-      h <- if (wide) 9 else 6
-      ggsave(file, plot = make_plot(), width = w, height = h, device = "svg")
+      d <- export_dimensions()
+      ggsave(file, plot = make_plot(), width = d$w, height = d$h, device = "svg")
     }
   )
 
