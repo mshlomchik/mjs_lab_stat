@@ -279,6 +279,12 @@ ui <- page_sidebar(
     sliderInput("point_size",
                 tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
                 min = 0.5, max = 6, value = 2, step = 0.5),
+    conditionalPanel(
+      "input.analysis_mode == 'groups'",
+      sliderInput("box_width",
+                  tooltip_label("Box/Bar width", "Width of each box or bar. Smaller values add more gap between groups."),
+                  min = 0.2, max = 0.9, value = 0.6, step = 0.05)
+    ),
     colourpicker::colourInput("axis_color",
                                tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
                                value = "#000000"),
@@ -1136,12 +1142,13 @@ server <- function(input, output, session) {
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else "Value"
     pt_size <- input$point_size %||% 1.4
+    bw <- input$box_width %||% 0.6
 
     if ((input$chart_type %||% "box") == "bar") {
       ds_multi <- df %>% group_by(colname, group) %>%
         summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
       p <- ggplot(df, aes(x = group, y = value, fill = group)) +
-        geom_col(data = ds_multi, aes(x = group, y = mean, fill = group), alpha = 0.7, width = 0.6) +
+        geom_col(data = ds_multi, aes(x = group, y = mean, fill = group), alpha = 0.7, width = bw) +
         geom_errorbar(data = ds_multi, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
                       inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.6) +
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
@@ -1149,7 +1156,7 @@ server <- function(input, output, session) {
         labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
     } else {
       p <- ggplot(df, aes(x = group, y = value, fill = group)) +
-        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
+        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = bw) +
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
         facet_wrap(~ colname, scales = "free_y") +
         labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
@@ -1186,10 +1193,11 @@ server <- function(input, output, session) {
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col %||% "Value")
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
     pt_size <- input$point_size %||% 2
+    bw <- input$box_width %||% 0.6
 
     if ((input$chart_type %||% "box") == "bar") {
       p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
-        geom_col(data = ds, aes(x = group, y = mean), inherit.aes = FALSE, alpha = 0.7, width = 0.6) +
+        geom_col(data = ds, aes(x = group, y = mean, fill = group), inherit.aes = FALSE, alpha = 0.7, width = bw) +
         geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
                       inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
@@ -1197,7 +1205,7 @@ server <- function(input, output, session) {
              subtitle = "Bar height = mean, error bar = SE, points = individual data")
     } else {
       p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
-        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
+        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = bw) +
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
         geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
                       inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
@@ -1245,13 +1253,14 @@ server <- function(input, output, session) {
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col_2f %||% "Value")
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$factor1_col %||% "Factor 1")
     pt_size <- input$point_size %||% 2
+    bw <- input$box_width %||% 0.6
 
     if ((input$chart_type %||% "box") == "bar") {
       ds2 <- ad %>% group_by(factor1, factor2) %>%
         summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
       p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
         geom_col(data = ds2, aes(x = factor1, y = mean, fill = factor2),
-                 position = position_dodge(width = 0.75), width = 0.7, alpha = 0.7) +
+                 position = position_dodge(width = 0.75), width = bw, alpha = 0.7) +
         geom_errorbar(data = ds2, aes(x = factor1, y = mean, ymin = mean - se, ymax = mean + se, group = factor2),
                       position = position_dodge(width = 0.75), width = 0.15, color = "#C0392B", linewidth = 0.7) +
         geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
@@ -1260,7 +1269,7 @@ server <- function(input, output, session) {
              title = "Two-way comparison", subtitle = "Bar height = mean, error bar = SE")
     } else {
       p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
-        geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
+        geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75), width = bw) +
         geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
                    size = pt_size, alpha = 0.6, color = "#2C3E50") +
         labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
