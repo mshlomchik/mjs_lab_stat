@@ -46,6 +46,7 @@ library(gridExtra)
 library(grid)
 library(colourpicker)
 library(scales)
+library(svglite)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
@@ -86,6 +87,25 @@ get_color_scale <- function(palette, custom_colors = NULL) {
 axis_angle_theme <- function(angle) {
   if (angle == 0) theme(axis.text.x = element_text(angle = 0, hjust = 0.5))
   else theme(axis.text.x = element_text(angle = angle, hjust = 1, vjust = 1))
+}
+
+# Axis line/text color + optional gridline removal, applied on top of the
+# base theme for every plot.
+extra_style_theme <- function(axis_color, hide_gridlines) {
+  thm <- theme(
+    axis.text  = element_text(color = axis_color),
+    axis.title = element_text(color = axis_color),
+    axis.line  = element_line(color = axis_color),
+    axis.ticks = element_line(color = axis_color)
+  )
+  if (isTRUE(hide_gridlines)) thm <- thm + theme(panel.grid = element_blank())
+  thm
+}
+
+# Log10-transforms the y-axis if requested. Returns NULL (a no-op layer)
+# otherwise, since ggplot objects can have NULL added to them safely.
+log_y_scale <- function(apply_log) {
+  if (isTRUE(apply_log)) scale_y_log10() else NULL
 }
 
 # Builds a label with a small (?) icon that shows `tip` text on hover.
@@ -249,6 +269,28 @@ ui <- page_sidebar(
       "input.palette == 'Custom'",
       uiOutput("custom_color_ui")
     ),
+    conditionalPanel(
+      "input.analysis_mode == 'groups'",
+      radioButtons("chart_type",
+                   tooltip_label("Chart type", "Boxplot shows the full distribution (median, quartiles, outliers). Bar plot shows just the mean with an SE error bar -- a more traditional presentation style."),
+                   choices = c("Boxplot" = "box", "Bar plot (mean + SE)" = "bar"),
+                   selected = "box")
+    ),
+    sliderInput("point_size",
+                tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
+                min = 0.5, max = 6, value = 2, step = 0.5),
+    colourpicker::colourInput("axis_color",
+                               tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
+                               value = "#000000"),
+    checkboxInput("hide_gridlines",
+                  tooltip_label("Remove gridlines", "Removes the background gridlines for a cleaner, more minimal look."),
+                  value = FALSE),
+    conditionalPanel(
+      "input.analysis_mode != 'survival'",
+      checkboxInput("log_y_axis",
+                    tooltip_label("Log-transform Y axis", "Switches the y-axis to a log10 scale -- useful when your data spans a wide range (e.g. several orders of magnitude). Values must be greater than 0."),
+                    value = FALSE)
+    ),
     sliderInput("axis_angle",
                 tooltip_label("X-axis label angle",
                                "Rotate the x-axis text -- helpful when category names are long and overlap each other."),
@@ -342,6 +384,7 @@ ui <- page_sidebar(
       "Plot",
       plotOutput("main_plot", height = "600px"),
       downloadButton("download_plot", "Download plot (PNG)"),
+      downloadButton("download_plot_svg", "Download plot (SVG)"),
       downloadButton("download_report", "Download Report (PDF)")
     )
   )
@@ -928,7 +971,8 @@ server <- function(input, output, session) {
            title = "Kaplan-Meier survival curve") +
       theme_minimal(base_size = input$text_size) +
       get_color_scale(input$palette, get_custom_colors(unique(sfit_df$strata))) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines)
   }
 
   # =========================================================
@@ -1022,13 +1066,15 @@ server <- function(input, output, session) {
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$response_col %||% "Response")
 
     ggplot(td, aes(x = x, y = response, color = group)) +
-      geom_point(size = 2, alpha = 0.6) +
+      geom_point(size = input$point_size %||% 2, alpha = 0.6) +
       geom_line(data = pred_list, aes(x = x, y = response, color = group), linewidth = 1) +
       labs(x = x_lab, y = y_lab, color = input$titration_group_col %||% "Group",
            title = "Titration / dose-response curve") +
       theme_minimal(base_size = input$text_size) +
       get_color_scale(input$palette, get_custom_colors(levels(td$group))) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      log_y_scale(input$log_y_axis)
   }
 
   # =========================================================
@@ -1089,16 +1135,33 @@ server <- function(input, output, session) {
     df <- multi_col_data()
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else "Value"
+    pt_size <- input$point_size %||% 1.4
 
-    p <- ggplot(df, aes(x = group, y = value, fill = group)) +
-      geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
-      geom_jitter(width = 0.12, size = 1.4, alpha = 0.6, color = "#2C3E50") +
-      facet_wrap(~ colname, scales = "free_y") +
-      labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group") +
+    if ((input$chart_type %||% "box") == "bar") {
+      ds_multi <- df %>% group_by(colname, group) %>%
+        summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+      p <- ggplot(df, aes(x = group, y = value, fill = group)) +
+        geom_col(data = ds_multi, aes(x = group, y = mean, fill = group), alpha = 0.7, width = 0.6) +
+        geom_errorbar(data = ds_multi, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.6) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        facet_wrap(~ colname, scales = "free_y") +
+        labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
+    } else {
+      p <- ggplot(df, aes(x = group, y = value, fill = group)) +
+        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        facet_wrap(~ colname, scales = "free_y") +
+        labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
+    }
+
+    p <- p +
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(droplevels(df$group)))) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      log_y_scale(input$log_y_axis)
 
     n <- n_groups()
     if (isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
@@ -1122,21 +1185,35 @@ server <- function(input, output, session) {
     ad <- analysis_data(); ds <- desc_stats()
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col %||% "Value")
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$group_col %||% "Group")
+    pt_size <- input$point_size %||% 2
 
-    p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
-      geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
-      geom_jitter(width = 0.12, size = 2, alpha = 0.7, color = "#2C3E50") +
-      geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
-                    inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
-      geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
-                 color = "#C0392B", size = 3, shape = 18) +
-      labs(x = x_lab, y = y_lab,
-           title = "Group comparison",
-           subtitle = "Boxplot with individual points; red diamond = mean +/- SE") +
+    if ((input$chart_type %||% "box") == "bar") {
+      p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
+        geom_col(data = ds, aes(x = group, y = mean), inherit.aes = FALSE, alpha = 0.7, width = 0.6) +
+        geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
+        labs(x = x_lab, y = y_lab, title = "Group comparison",
+             subtitle = "Bar height = mean, error bar = SE, points = individual data")
+    } else {
+      p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
+        geom_boxplot(alpha = 0.5, outlier.shape = NA, width = 0.6) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
+        geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.15, color = "#C0392B", linewidth = 0.8) +
+        geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
+                   color = "#C0392B", size = 3, shape = 18) +
+        labs(x = x_lab, y = y_lab, title = "Group comparison",
+             subtitle = "Boxplot with individual points; red diamond = mean +/- SE")
+    }
+
+    p <- p +
       theme_minimal(base_size = input$text_size) +
       theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$group))) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      log_y_scale(input$log_y_axis)
 
     n <- n_groups()
     if (isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
@@ -1167,17 +1244,35 @@ server <- function(input, output, session) {
     ad <- analysis_data_2f()
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$value_col_2f %||% "Value")
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$factor1_col %||% "Factor 1")
+    pt_size <- input$point_size %||% 2
 
-    ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
-      geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
-      geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
-                 size = 1.8, alpha = 0.6, color = "#2C3E50") +
-      labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
-           title = "Two-way comparison",
-           subtitle = "Grouped by factor 1, colored by factor 2") +
+    if ((input$chart_type %||% "box") == "bar") {
+      ds2 <- ad %>% group_by(factor1, factor2) %>%
+        summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+      p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
+        geom_col(data = ds2, aes(x = factor1, y = mean, fill = factor2),
+                 position = position_dodge(width = 0.75), width = 0.7, alpha = 0.7) +
+        geom_errorbar(data = ds2, aes(x = factor1, y = mean, ymin = mean - se, ymax = mean + se, group = factor2),
+                      position = position_dodge(width = 0.75), width = 0.15, color = "#C0392B", linewidth = 0.7) +
+        geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
+                   size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
+             title = "Two-way comparison", subtitle = "Bar height = mean, error bar = SE")
+    } else {
+      p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
+        geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75)) +
+        geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
+                   size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
+             title = "Two-way comparison", subtitle = "Grouped by factor 1, colored by factor 2")
+    }
+
+    p +
       theme_minimal(base_size = input$text_size) +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      log_y_scale(input$log_y_axis)
   }
 
   make_corr_plot <- function() {
@@ -1186,10 +1281,12 @@ server <- function(input, output, session) {
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$x_col %||% "X")
 
     p <- ggplot(cd, aes(x = x, y = y)) +
-      geom_point(size = 2.5, alpha = 0.7, color = "#2C6E49") +
+      geom_point(size = input$point_size %||% 2.5, alpha = 0.7, color = "#2C6E49") +
       labs(x = x_lab, y = y_lab, title = "Correlation / regression") +
       theme_minimal(base_size = input$text_size) +
-      axis_angle_theme(input$axis_angle)
+      axis_angle_theme(input$axis_angle) +
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      log_y_scale(input$log_y_axis)
     if (isTRUE(input$show_regression)) p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#C0392B")
     p
   }
@@ -1217,6 +1314,16 @@ server <- function(input, output, session) {
       w <- if (wide) 12 else 8
       h <- if (wide) 9 else 6
       ggsave(file, plot = make_plot(), width = w, height = h, dpi = 300)
+    }
+  )
+
+  output$download_plot_svg <- downloadHandler(
+    filename = function() "lab_stats_plot.svg",
+    content  = function(file) {
+      wide <- isTRUE(input$plot_all_cols) && input$analysis_mode == "groups" && input$group_design == "one"
+      w <- if (wide) 12 else 8
+      h <- if (wide) 9 else 6
+      ggsave(file, plot = make_plot(), width = w, height = h, device = "svg")
     }
   )
 
