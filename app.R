@@ -275,71 +275,9 @@ ui <- page_sidebar(
                  tooltip_label("Significance level (alpha)",
                                 "The p-value threshold below which a result is called statistically significant. 0.05 is the conventional default."),
                  value = 0.05, min = 0.001, max = 0.5, step = 0.01),
-    hr(),
-
-    h5("Plot options"),
-    selectInput(
-      "palette",
-      tooltip_label("Color palette", "The color scheme used for groups/lines in the plot. Choose \"Custom\" to pick each group's color yourself."),
-      choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1", "Custom"),
-      selected = "Default"
-    ),
-    conditionalPanel(
-      "input.palette == 'Custom'",
-      uiOutput("custom_color_ui")
-    ),
-    conditionalPanel(
-      "input.analysis_mode == 'groups'",
-      selectInput("chart_type",
-                  tooltip_label("Chart type", "Boxplot shows the full distribution (median, quartiles, outliers). Bar plot shows the mean with an SE error bar. Violin plot shows the full density shape of the data. Scatter/dot plot shows only the raw points with a mean +/- SE marker. Density plot overlays a smoothed distribution curve per group on a continuous axis, instead of discrete boxes/bars."),
-                  choices = c("Boxplot" = "box", "Bar plot (mean + SE)" = "bar",
-                              "Violin plot" = "violin", "Scatter / dot plot" = "scatter",
-                              "Density plot" = "density"),
-                  selected = "box")
-    ),
-    helpText("Plot width, height, point size, and box/bar spacing are ",
-             "controlled from the Plot tab itself, next to the plot."),
-    colourpicker::colourInput("axis_color",
-                               tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
-                               value = "#000000"),
-    checkboxInput("hide_gridlines",
-                  tooltip_label("Remove gridlines", "Removes the background gridlines for a cleaner, more minimal look."),
-                  value = FALSE),
-    conditionalPanel(
-      "input.analysis_mode != 'survival'",
-      checkboxInput("log_y_axis",
-                    tooltip_label("Log-transform Y axis", "Switches the y-axis to a log10 scale -- useful when your data spans a wide range (e.g. several orders of magnitude). Values must be greater than 0."),
-                    value = FALSE)
-    ),
-    sliderInput("axis_angle",
-                tooltip_label("X-axis label angle",
-                               "Rotate the x-axis text -- helpful when category names are long and overlap each other."),
-                min = 0, max = 90, value = 0, step = 15),
-    sliderInput("text_size",
-                tooltip_label("Plot text size", "Font size for titles, axis labels, and legends in the plot."),
-                min = 8, max = 24, value = 14, step = 1),
-    textInput("x_axis_label",
-              tooltip_label("X-axis label (optional override)",
-                             "Type your own x-axis label. Leave blank to auto-use the column name."),
-              value = "", placeholder = "Leave blank to use the column name"),
-    textInput("y_axis_label",
-              tooltip_label("Y-axis label (optional override)",
-                             "Type your own y-axis label. Leave blank to auto-use the column name."),
-              value = "", placeholder = "Leave blank to use the column name"),
-    conditionalPanel(
-      "input.analysis_mode == 'groups' && input.group_design != 'two'",
-      checkboxInput("show_pvalues",
-                    tooltip_label("Show p-value brackets on plot (2-4 groups)",
-                                   "Draws brackets with the p-value for every pairwise group comparison directly on the plot."),
-                    value = TRUE),
-      checkboxInput("plot_all_cols",
-                    tooltip_label("Plot ALL numeric columns at once (faceted)",
-                                   "Instead of one chosen column, shows every other numeric column in your file as its own mini comparison plot."),
-                    value = FALSE)
-    ),
-
     helpText("Upload a file, choose an analysis type, then pick the ",
-             "relevant columns below.")
+             "relevant columns below. All plot styling and sizing options ",
+             "are on the right side of the Plot tab.")
   ),
 
   navset_card_tab(
@@ -418,37 +356,6 @@ ui <- page_sidebar(
 
     nav_panel(
       "Plot",
-      accordion(
-        open = FALSE,
-        accordion_panel(
-          "Plot size & spacing",
-          layout_column_wrap(
-            width = "200px",
-            sliderInput("plot_width_px",
-                        tooltip_label("Plot width (pixels)", "Overall width of the plot. Narrowing this (along with a smaller box/bar width) keeps things looking compact instead of scattered."),
-                        min = 400, max = 1400, value = 800, step = 50),
-            sliderInput("plot_height_px",
-                        tooltip_label("Plot height (pixels)", "Overall height of the plot."),
-                        min = 300, max = 900, value = 500, step = 50),
-            sliderInput("point_size",
-                        tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
-                        min = 0.5, max = 6, value = 2, step = 0.5),
-            conditionalPanel(
-              "input.analysis_mode == 'groups'",
-              sliderInput("box_width",
-                          tooltip_label("Box/Bar width", "Width of each individual box or bar."),
-                          min = 0.2, max = 0.9, value = 0.6, step = 0.05)
-            ),
-            conditionalPanel(
-              "input.analysis_mode == 'groups'",
-              sliderInput("category_spacing",
-                          tooltip_label("Space between groups", "Controls the gap left on either side of the groups and between them, independent of box/bar width. Lower = groups pulled closer together; higher = more spread out."),
-                          min = 0, max = 0.4, value = 0.1, step = 0.05)
-            )
-          )
-        )
-      ),
-      plotOutput("main_plot"),
       tags$script(HTML("
         function copyPlotToClipboard() {
           var container = document.getElementById('main_plot');
@@ -463,14 +370,108 @@ ui <- page_sidebar(
             .catch(function(err) { alert('Could not copy the plot: ' + err); });
         }
       ")),
-      tags$button(type = "button", class = "btn btn-default", style = "margin: 5px 5px 5px 0;",
-                  onclick = "copyPlotToClipboard()",
-                  icon("copy"), "Copy plot to clipboard"),
-      br(),
-      downloadButton("download_plot", "Download plot (PNG)"),
-      downloadButton("download_plot_svg", "Download plot (SVG)"),
-      downloadButton("download_plot_eps", "Download plot (EPS)"),
-      downloadButton("download_report", "Download Report (PDF)")
+      layout_sidebar(
+        sidebar = sidebar(
+          position = "right",
+          width = 300,
+          open = "always",
+
+          h6("Export"),
+          tags$div(
+            class = "dropdown",
+            tags$button(
+              class = "btn btn-default dropdown-toggle", type = "button",
+              `data-bs-toggle` = "dropdown", `aria-expanded` = "false",
+              icon("download"), " Export plot"
+            ),
+            tags$ul(
+              class = "dropdown-menu",
+              tags$li(tags$a(class = "dropdown-item", href = "#",
+                              onclick = "copyPlotToClipboard(); return false;",
+                              icon("copy"), " Copy to clipboard")),
+              tags$li(downloadLink("download_plot", label = tagList(icon("image"), " PNG"), class = "dropdown-item")),
+              tags$li(downloadLink("download_plot_svg", label = tagList(icon("bezier-curve"), " SVG"), class = "dropdown-item")),
+              tags$li(downloadLink("download_plot_eps", label = tagList(icon("file"), " EPS"), class = "dropdown-item")),
+              tags$li(downloadLink("download_report", label = tagList(icon("file-pdf"), " Full report (PDF)"), class = "dropdown-item"))
+            )
+          ),
+          hr(),
+
+          h6("Size & spacing"),
+          sliderInput("plot_width_px",
+                      tooltip_label("Plot width (px)", "Overall width of the plot. Narrowing this (along with a smaller box/bar width) keeps things looking compact instead of scattered."),
+                      min = 400, max = 1400, value = 800, step = 50),
+          sliderInput("plot_height_px",
+                      tooltip_label("Plot height (px)", "Overall height of the plot."),
+                      min = 300, max = 900, value = 500, step = 50),
+          sliderInput("point_size",
+                      tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
+                      min = 0.5, max = 6, value = 2, step = 0.5),
+          conditionalPanel(
+            "input.analysis_mode == 'groups'",
+            sliderInput("box_width",
+                        tooltip_label("Box/Bar width", "Width of each individual box or bar."),
+                        min = 0.2, max = 0.9, value = 0.6, step = 0.05),
+            sliderInput("category_spacing",
+                        tooltip_label("Space between groups", "Controls the gap left on either side of the groups and between them, independent of box/bar width."),
+                        min = 0, max = 0.4, value = 0.1, step = 0.05)
+          ),
+          hr(),
+
+          h6("Style"),
+          selectInput(
+            "palette",
+            tooltip_label("Color palette", "The color scheme used for groups/lines. Choose \"Custom\" to pick each group's color yourself."),
+            choices = c("Default", "Viridis", "Set1", "Set2", "Dark2", "Paired", "Pastel1", "Custom"),
+            selected = "Default"
+          ),
+          conditionalPanel("input.palette == 'Custom'", uiOutput("custom_color_ui")),
+          conditionalPanel(
+            "input.analysis_mode == 'groups'",
+            selectInput("chart_type",
+                        tooltip_label("Chart type", "Boxplot shows the full distribution. Bar plot shows mean + SE. Violin plot shows density shape. Scatter/dot plot shows only raw points. Density plot overlays distribution curves per group."),
+                        choices = c("Boxplot" = "box", "Bar plot (mean + SE)" = "bar",
+                                    "Violin plot" = "violin", "Scatter / dot plot" = "scatter",
+                                    "Density plot" = "density"),
+                        selected = "box")
+          ),
+          colourpicker::colourInput("axis_color",
+                                     tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
+                                     value = "#000000"),
+          checkboxInput("hide_gridlines",
+                        tooltip_label("Remove gridlines", "Removes the background gridlines for a cleaner look."),
+                        value = FALSE),
+          conditionalPanel(
+            "input.analysis_mode != 'survival'",
+            checkboxInput("log_y_axis",
+                          tooltip_label("Log-transform Y axis", "Switches the y-axis to log10 scale. Values must be greater than 0."),
+                          value = FALSE)
+          ),
+          sliderInput("axis_angle",
+                      tooltip_label("X-axis label angle", "Rotate the x-axis text -- helpful for long category names."),
+                      min = 0, max = 90, value = 0, step = 15),
+          sliderInput("text_size",
+                      tooltip_label("Plot text size", "Font size for titles, axis labels, and legends."),
+                      min = 8, max = 24, value = 14, step = 1),
+          textInput("x_axis_label",
+                    tooltip_label("X-axis label (override)", "Leave blank to auto-use the column name."),
+                    value = "", placeholder = "Column name by default"),
+          textInput("y_axis_label",
+                    tooltip_label("Y-axis label (override)", "Leave blank to auto-use the column name."),
+                    value = "", placeholder = "Column name by default"),
+          conditionalPanel(
+            "input.analysis_mode == 'groups' && input.group_design != 'two'",
+            checkboxInput("show_pvalues",
+                          tooltip_label("Show p-value brackets (2-4 groups)", "Draws brackets with the p-value for every pairwise comparison."),
+                          value = TRUE),
+            checkboxInput("plot_all_cols",
+                          tooltip_label("Plot ALL numeric columns (faceted)", "Shows every other numeric column as its own mini comparison plot."),
+                          value = FALSE)
+          )
+        ),
+
+        plotOutput("main_plot")
+      )
     )
   )
 )
