@@ -1050,15 +1050,25 @@ server <- function(input, output, session) {
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$surv_time_col %||% "Time")
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else "Survival probability"
 
+    surv_caption <- tryCatch({
+      sd <- surv_data()
+      if (nlevels(sd$group) > 1) {
+        test <- survival::survdiff(survival::Surv(time, status) ~ group, data = sd)
+        p <- 1 - pchisq(test$chisq, length(test$n) - 1)
+        paste("Log-rank test:", format_p(p))
+      } else ""
+    }, error = function(e) "")
+
     ggplot(sfit_df, aes(x = time, y = surv, color = strata)) +
       geom_step(linewidth = 1) +
       scale_y_continuous(limits = c(0, 1)) +
       labs(x = x_lab, y = y_lab, color = input$surv_group_col %||% "Group",
-           title = "Kaplan-Meier survival curve") +
+           title = "Kaplan-Meier survival curve", caption = surv_caption) +
       theme_minimal(base_size = input$text_size) +
       get_color_scale(input$palette, get_custom_colors(unique(sfit_df$strata))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines)
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      theme(plot.caption = element_text(size = rel(1.1), face = "bold", color = input$axis_color %||% "#000000"))
   }
 
   # =========================================================
@@ -1307,6 +1317,15 @@ server <- function(input, output, session) {
 
     chart_type <- input$chart_type %||% "box"
 
+    overall_p_caption <- tryCatch({
+      tr0 <- test_result()
+      if (tr0$type == "t-test") paste("t-test:", format_p(tr0$result$p.value))
+      else if (tr0$type == "wilcoxon") paste("Wilcoxon:", format_p(tr0$result$p.value))
+      else if (tr0$type == "anova") paste("ANOVA (overall):", format_p(summary(tr0$result)[[1]][["Pr(>F)"]][1]))
+      else if (tr0$type == "kruskal") paste("Kruskal-Wallis (overall):", format_p(tr0$result$p.value))
+      else ""
+    }, error = function(e) "")
+
     if (chart_type == "bar") {
       p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
         geom_col(data = ds, aes(x = group, y = mean, fill = group), inherit.aes = FALSE, alpha = 0.7, width = bw) +
@@ -1356,11 +1375,13 @@ server <- function(input, output, session) {
     }
 
     p <- p +
+      labs(caption = overall_p_caption) +
       theme_minimal(base_size = input$text_size) +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$group))) +
       get_color_scale(input$palette, get_custom_colors(levels(ad$group))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines)
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      theme(plot.caption = element_text(size = rel(1.05), face = "bold", color = input$axis_color %||% "#000000"))
 
     if (chart_type == "density") {
       p <- p + theme(legend.position = "right")
@@ -1408,6 +1429,14 @@ server <- function(input, output, session) {
     ds2 <- ad %>% group_by(factor1, factor2) %>%
       summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
 
+    twoway_p_caption <- tryCatch({
+      s2 <- summary(two_way_fit())[[1]]
+      sprintf("%s: %s | %s: %s | Interaction: %s",
+              input$factor1_col %||% "Factor 1", format_p(s2[["Pr(>F)"]][1]),
+              input$factor2_col %||% "Factor 2", format_p(s2[["Pr(>F)"]][2]),
+              format_p(s2[["Pr(>F)"]][3]))
+    }, error = function(e) "")
+
     if (chart_type == "bar") {
       p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
         geom_col(data = ds2, aes(x = factor1, y = mean, fill = factor2),
@@ -1450,11 +1479,13 @@ server <- function(input, output, session) {
     }
 
     p <- p +
+      labs(caption = twoway_p_caption) +
       theme_minimal(base_size = input$text_size) +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
       get_color_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines)
+      extra_style_theme(input$axis_color, input$hide_gridlines) +
+      theme(plot.caption = element_text(size = rel(1.0), face = "bold", color = input$axis_color %||% "#000000"))
 
     if (chart_type == "density") {
       if (isTRUE(input$log_y_axis)) p <- p + scale_x_log10()
@@ -1471,12 +1502,18 @@ server <- function(input, output, session) {
     y_lab <- if (nzchar(input$y_axis_label)) input$y_axis_label else (input$y_col %||% "Y")
     x_lab <- if (nzchar(input$x_axis_label)) input$x_axis_label else (input$x_col %||% "X")
 
+    corr_caption <- tryCatch({
+      ct <- cor.test(cd$x, cd$y, method = input$corr_method %||% "pearson")
+      sprintf("r = %.2f, %s", unname(ct$estimate), format_p(ct$p.value))
+    }, error = function(e) "")
+
     p <- ggplot(cd, aes(x = x, y = y)) +
       geom_point(size = input$point_size %||% 2.5, alpha = 0.7, color = "#2C6E49") +
-      labs(x = x_lab, y = y_lab, title = "Correlation / regression") +
+      labs(x = x_lab, y = y_lab, title = "Correlation / regression", caption = corr_caption) +
       theme_minimal(base_size = input$text_size) +
       axis_angle_theme(input$axis_angle) +
       extra_style_theme(input$axis_color, input$hide_gridlines) +
+      theme(plot.caption = element_text(size = rel(1.1), face = "bold", color = input$axis_color %||% "#000000")) +
       log_y_scale(input$log_y_axis)
     if (isTRUE(input$show_regression)) p <- p + geom_smooth(method = "lm", formula = y ~ x, se = TRUE, color = "#C0392B")
     p
