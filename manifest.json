@@ -2540,8 +2540,11 @@
     "app_5.R": {
       "checksum": "372aa4dcba128ed66a788f7f10b75b28"
     },
-    "app.R": {
+    "app_6.R": {
       "checksum": "d4ad6be8e9a11d2696e0433ac3ca25ca"
+    },
+    "app.R": {
+      "checksum": "59d3f71348602c5321c0d855deb0a557"
     },
     "dummydata_manual/Lab_Stats_Explorer_Manual.pdf": {
       "checksum": "b67a9fad0a9fc59591d351ae9acc43b4"

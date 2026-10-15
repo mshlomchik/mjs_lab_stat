@@ -233,49 +233,74 @@ extract_pairwise <- function(tr, group_levels) {
 }
 
 # For the two-way ANOVA plot: finds pairwise comparisons from the
-# factor1:factor2 Tukey HSD table that compare different factor2 levels
-# *within the same factor1 level* (e.g. within "Kidney", Control vs Drug) --
-# these are the comparisons that make sense to draw as a bracket between
-# two dodged bars/boxes sitting at the same x position. Comparisons that
-# cross factor1 levels (e.g. Kidney:Control vs Spleen:Drug) are skipped,
-# since they don't correspond to two bars next to each other.
+# factor1:factor2 Tukey HSD table that correspond to two bars/boxes that
+# are either in the same cluster or directly comparable across clusters,
+# and returns bracket coordinates for each:
+#   $within -- same factor1, different factor2 (e.g. within "Kidney",
+#              Control vs Drug) -- bracket sits just above that cluster
+#   $across -- same factor2, different factor1 (e.g. Control in Kidney
+#              vs Control in Spleen) -- bracket spans across clusters,
+#              drawn higher up so it doesn't collide with the within brackets
+# Comparisons where BOTH factor1 and factor2 differ (e.g. Kidney:Control
+# vs Spleen:Drug) are skipped, since they don't correspond to two bars
+# that share an x-position or a color, so a bracket wouldn't read clearly.
 twoway_bracket_df <- function(ad, fit, dodge_width = 0.75) {
+  empty <- data.frame()
   f1_levels <- levels(ad$factor1); f2_levels <- levels(ad$factor2); n2 <- length(f2_levels)
   tk <- tryCatch(TukeyHSD(fit)[["factor1:factor2"]], error = function(e) NULL)
-  if (is.null(tk)) return(data.frame())
+  if (is.null(tk)) return(list(within = empty, across = empty))
   tk_df <- as.data.frame(tk); tk_df$comparison <- rownames(tk_df)
 
   offset <- function(j) dodge_width * ((j - 0.5) / n2 - 0.5)
 
-  rows <- list()
+  within_rows <- list(); across_rows <- list()
   for (i in seq_len(nrow(tk_df))) {
     parts <- strsplit(tk_df$comparison[i], "-")[[1]]
     left  <- strsplit(parts[1], ":")[[1]]
     right <- strsplit(parts[2], ":")[[1]]
-    if (left[1] != right[1]) next  # different factor1 level -- not a same-cluster comparison
+    same_f1 <- left[1] == right[1]; same_f2 <- left[2] == right[2]
 
-    x_base <- match(left[1], f1_levels)
-    j_left <- match(left[2], f2_levels); j_right <- match(right[2], f2_levels)
-    xmin <- x_base + offset(j_left); xmax <- x_base + offset(j_right)
-    if (xmin > xmax) { tmp <- xmin; xmin <- xmax; xmax <- tmp }
-
-    base_y <- suppressWarnings(max(ad$value[ad$factor1 == left[1]], na.rm = TRUE))
-    rows[[length(rows) + 1]] <- data.frame(
-      factor1 = left[1], xmin = xmin, xmax = xmax, p = tk_df[["p adj"]][i], base_y = base_y
-    )
+    if (same_f1 && !same_f2) {
+      x_base <- match(left[1], f1_levels)
+      j_left <- match(left[2], f2_levels); j_right <- match(right[2], f2_levels)
+      xmin <- x_base + offset(j_left); xmax <- x_base + offset(j_right)
+      if (xmin > xmax) { tmp <- xmin; xmin <- xmax; xmax <- tmp }
+      base_y <- suppressWarnings(max(ad$value[ad$factor1 == left[1]], na.rm = TRUE))
+      within_rows[[length(within_rows) + 1]] <- data.frame(
+        factor1 = left[1], xmin = xmin, xmax = xmax, p = tk_df[["p adj"]][i], base_y = base_y
+      )
+    } else if (!same_f1 && same_f2) {
+      x_base_left <- match(left[1], f1_levels); x_base_right <- match(right[1], f1_levels)
+      j <- match(left[2], f2_levels)
+      xmin <- x_base_left + offset(j); xmax <- x_base_right + offset(j)
+      if (xmin > xmax) { tmp <- xmin; xmin <- xmax; xmax <- tmp }
+      across_rows[[length(across_rows) + 1]] <- data.frame(
+        factor2 = left[2], xmin = xmin, xmax = xmax, p = tk_df[["p adj"]][i]
+      )
+    }
+    # same_f1 && same_f2 can't happen (would be comparing a cell to itself);
+    # !same_f1 && !same_f2 is skipped intentionally, as noted above.
   }
-  if (length(rows) == 0) return(data.frame())
 
-  out <- do.call(rbind, rows)
+  overall_max <- suppressWarnings(max(ad$value, na.rm = TRUE))
   rng <- suppressWarnings(max(ad$value, na.rm = TRUE) - min(ad$value, na.rm = TRUE))
-  step <- if (rng > 0) rng * 0.1 else abs(max(ad$value, na.rm = TRUE)) * 0.1 + 0.01
+  step <- if (rng > 0) rng * 0.1 else abs(overall_max) * 0.1 + 0.01
 
-  out <- out %>%
-    group_by(factor1) %>%
-    mutate(y_position = base_y + step * row_number()) %>%
-    ungroup()
-  out$label <- sapply(out$p, format_p)
-  out
+  within_df <- if (length(within_rows) > 0) {
+    out <- do.call(rbind, within_rows)
+    out <- out %>% group_by(factor1) %>% mutate(y_position = base_y + step * row_number()) %>% ungroup()
+    out$label <- sapply(out$p, format_p)
+    out
+  } else empty
+
+  across_df <- if (length(across_rows) > 0) {
+    out <- do.call(rbind, across_rows)
+    out$y_position <- overall_max + step * 2 + step * seq_len(nrow(out))
+    out$label <- sapply(out$p, format_p)
+    out
+  } else empty
+
+  list(within = within_df, across = across_df)
 }
 
 # ---------------------------------------------------------
@@ -1541,15 +1566,24 @@ server <- function(input, output, session) {
         scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
         log_y_scale(input$log_y_axis)
 
-      n2 <- nlevels(ad$factor2)
-      if (isTRUE(input$show_pvalues) && n2 >= 2 && n2 <= 4) {
-        ann2 <- twoway_bracket_df(ad, two_way_fit())
-        if (nrow(ann2) > 0) {
+      n1 <- nlevels(ad$factor1); n2 <- nlevels(ad$factor2)
+      if (isTRUE(input$show_pvalues)) {
+        brackets <- twoway_bracket_df(ad, two_way_fit())
+
+        if (n2 >= 2 && n2 <= 4 && nrow(brackets$within) > 0) {
           p <- p + geom_signif(
-            data = ann2,
+            data = brackets$within,
             aes(xmin = xmin, xmax = xmax, annotations = label, y_position = y_position),
             manual = TRUE, inherit.aes = FALSE, tip_length = 0.01,
-            textsize = max(2.2, input$text_size / 4), vjust = -0.2
+            textsize = max(2.2, input$text_size / 4), vjust = -0.2, color = "#444444"
+          )
+        }
+        if (n1 >= 2 && n1 <= 4 && nrow(brackets$across) > 0) {
+          p <- p + geom_signif(
+            data = brackets$across,
+            aes(xmin = xmin, xmax = xmax, annotations = label, y_position = y_position),
+            manual = TRUE, inherit.aes = FALSE, tip_length = 0.01,
+            textsize = max(2.2, input$text_size / 4), vjust = -0.2, color = "#C0392B"
           )
         }
       }
