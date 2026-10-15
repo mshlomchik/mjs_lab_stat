@@ -47,6 +47,7 @@ library(grid)
 library(colourpicker)
 library(scales)
 library(svglite)
+library(httr2)
 
 options(shiny.maxRequestSize = 25 * 1024^2)  # 25 MB upload limit
 
@@ -56,6 +57,21 @@ format_p <- function(p) {
   if (is.na(p)) return("NA")
   if (p < 0.001) return("p < 0.001")
   paste0("p = ", formatC(p, digits = 3, format = "f"))
+}
+
+# Same as format_p() but used for embedding inline in a sentence (just an
+# alias kept separate in case the two ever need to diverge in wording).
+fmt_p_clause <- function(p) format_p(p)
+
+posthoc_label <- function(method) {
+  switch(method,
+    "tukey"       = "Tukey HSD",
+    "bonf"        = "Bonferroni-corrected pairwise t-tests",
+    "dunn_bh"     = "Dunn's test, BH-adjusted",
+    "wilcox_bh"   = "pairwise Wilcoxon tests, BH-adjusted",
+    "wilcox_bonf" = "pairwise Wilcoxon tests, Bonferroni-adjusted",
+    "the selected post-hoc method"
+  )
 }
 
 get_fill_scale <- function(palette, custom_colors = NULL) {
@@ -271,10 +287,12 @@ ui <- page_sidebar(
     ),
     conditionalPanel(
       "input.analysis_mode == 'groups'",
-      radioButtons("chart_type",
-                   tooltip_label("Chart type", "Boxplot shows the full distribution (median, quartiles, outliers). Bar plot shows just the mean with an SE error bar -- a more traditional presentation style."),
-                   choices = c("Boxplot" = "box", "Bar plot (mean + SE)" = "bar"),
-                   selected = "box")
+      selectInput("chart_type",
+                  tooltip_label("Chart type", "Boxplot shows the full distribution (median, quartiles, outliers). Bar plot shows the mean with an SE error bar. Violin plot shows the full density shape of the data. Scatter/dot plot shows only the raw points with a mean +/- SE marker. Density plot overlays a smoothed distribution curve per group on a continuous axis, instead of discrete boxes/bars."),
+                  choices = c("Boxplot" = "box", "Bar plot (mean + SE)" = "bar",
+                              "Violin plot" = "violin", "Scatter / dot plot" = "scatter",
+                              "Density plot" = "density"),
+                  selected = "box")
     ),
     sliderInput("point_size",
                 tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
@@ -396,10 +414,45 @@ ui <- page_sidebar(
     ),
 
     nav_panel(
+      "Summary",
+      h5("Auto-generated summary"),
+      helpText("A plain-language summary written directly from the statistics above -- ",
+               "every number in it comes straight from your results, nothing is estimated or guessed."),
+      verbatimTextOutput("auto_summary"),
+      conditionalPanel(
+        "output.claude_key_missing == 'no'",
+        hr(),
+        actionButton("polish_btn", "Polish with Claude", icon = icon("wand-magic-sparkles")),
+        hr(),
+        h5("Polished version"),
+        uiOutput("polished_summary_ui")
+      )
+    ),
+
+    nav_panel(
       "Plot",
       plotOutput("main_plot"),
+      tags$script(HTML("
+        function copyPlotToClipboard() {
+          var container = document.getElementById('main_plot');
+          var img = container ? container.querySelector('img') : null;
+          if (!img) { alert('Plot is not ready yet -- wait for it to render, then try again.'); return; }
+          fetch(img.src)
+            .then(function(res) { return res.blob(); })
+            .then(function(blob) {
+              return navigator.clipboard.write([new ClipboardItem({ [blob.type]: blob })]);
+            })
+            .then(function() { alert('Plot copied to clipboard!'); })
+            .catch(function(err) { alert('Could not copy the plot: ' + err); });
+        }
+      ")),
+      tags$button(type = "button", class = "btn btn-default", style = "margin: 5px 5px 5px 0;",
+                  onclick = "copyPlotToClipboard()",
+                  icon("copy"), "Copy plot to clipboard"),
+      br(),
       downloadButton("download_plot", "Download plot (PNG)"),
       downloadButton("download_plot_svg", "Download plot (SVG)"),
+      downloadButton("download_plot_eps", "Download plot (EPS)"),
       downloadButton("download_report", "Download Report (PDF)")
     )
   )
@@ -1153,9 +1206,11 @@ server <- function(input, output, session) {
     pt_size <- input$point_size %||% 1.4
     bw <- input$box_width %||% 0.6
 
-    if ((input$chart_type %||% "box") == "bar") {
-      ds_multi <- df %>% group_by(colname, group) %>%
-        summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+    chart_type <- input$chart_type %||% "box"
+    ds_multi <- df %>% group_by(colname, group) %>%
+      summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+
+    if (chart_type == "bar") {
       p <- ggplot(df, aes(x = group, y = value, fill = group)) +
         geom_col(data = ds_multi, aes(x = group, y = mean, fill = group), alpha = 0.7, width = bw) +
         geom_errorbar(data = ds_multi, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
@@ -1163,6 +1218,25 @@ server <- function(input, output, session) {
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
         facet_wrap(~ colname, scales = "free_y") +
         labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
+    } else if (chart_type == "violin") {
+      p <- ggplot(df, aes(x = group, y = value, fill = group)) +
+        geom_violin(alpha = 0.5, width = bw, trim = FALSE) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        facet_wrap(~ colname, scales = "free_y") +
+        labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
+    } else if (chart_type == "scatter") {
+      p <- ggplot(df, aes(x = group, y = value, fill = group, color = group)) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.8) +
+        geom_errorbar(data = ds_multi, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.1, color = "#C0392B", linewidth = 0.6) +
+        facet_wrap(~ colname, scales = "free_y") +
+        labs(x = x_lab, y = y_lab, title = "All numeric columns, compared by group")
+    } else if (chart_type == "density") {
+      p <- ggplot(df, aes(x = value, fill = group, color = group)) +
+        geom_density(alpha = 0.35, linewidth = 0.7) +
+        facet_wrap(~ colname, scales = "free") +
+        labs(x = y_lab, y = "Density", fill = x_lab, color = x_lab,
+             title = "All numeric columns, density by group")
     } else {
       p <- ggplot(df, aes(x = group, y = value, fill = group)) +
         geom_boxplot(alpha = 0.5, outlier.shape = NA, width = bw) +
@@ -1173,15 +1247,23 @@ server <- function(input, output, session) {
 
     p <- p +
       theme_minimal(base_size = input$text_size) +
-      theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(droplevels(df$group)))) +
-      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+      get_color_scale(input$palette, get_custom_colors(levels(droplevels(df$group)))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines) +
-      log_y_scale(input$log_y_axis)
+      extra_style_theme(input$axis_color, input$hide_gridlines)
+
+    if (chart_type == "density") {
+      p <- p + theme(legend.position = "right")
+      if (isTRUE(input$log_y_axis)) p <- p + scale_x_log10()
+    } else {
+      p <- p +
+        theme(legend.position = "none") +
+        scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+        log_y_scale(input$log_y_axis)
+    }
 
     n <- n_groups()
-    if (isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
+    if (chart_type != "density" && isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
       ann <- multi_col_annotations()
       if (nrow(ann) > 0) {
         p <- p + geom_signif(
@@ -1205,7 +1287,9 @@ server <- function(input, output, session) {
     pt_size <- input$point_size %||% 2
     bw <- input$box_width %||% 0.6
 
-    if ((input$chart_type %||% "box") == "bar") {
+    chart_type <- input$chart_type %||% "box"
+
+    if (chart_type == "bar") {
       p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
         geom_col(data = ds, aes(x = group, y = mean, fill = group), inherit.aes = FALSE, alpha = 0.7, width = bw) +
         geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
@@ -1213,6 +1297,34 @@ server <- function(input, output, session) {
         geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
         labs(x = x_lab, y = y_lab, title = "Group comparison",
              subtitle = "Bar height = mean, error bar = SE, points = individual data")
+    } else if (chart_type == "violin") {
+      p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
+        geom_violin(alpha = 0.5, width = bw, trim = FALSE) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.7, color = "#2C3E50") +
+        geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.1, color = "#C0392B", linewidth = 0.8) +
+        geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
+                   color = "#C0392B", size = 3, shape = 18) +
+        labs(x = x_lab, y = y_lab, title = "Group comparison",
+             subtitle = "Violin plot (shows data density) with individual points; red diamond = mean +/- SE")
+    } else if (chart_type == "scatter") {
+      p <- ggplot(ad, aes(x = group, y = value, fill = group, color = group)) +
+        geom_jitter(width = 0.12, size = pt_size, alpha = 0.8) +
+        geom_errorbar(data = ds, aes(x = group, y = mean, ymin = mean - se, ymax = mean + se),
+                      inherit.aes = FALSE, width = 0.1, color = "#C0392B", linewidth = 0.8) +
+        geom_point(data = ds, aes(x = group, y = mean), inherit.aes = FALSE,
+                   color = "#C0392B", size = 3, shape = 18) +
+        labs(x = x_lab, y = y_lab, title = "Group comparison",
+             subtitle = "Scatter/dot plot of individual data points; red diamond = mean +/- SE")
+    } else if (chart_type == "density") {
+      # Density plots put the measured value on the x-axis and overlay a
+      # distribution curve per group -- a fundamentally different layout
+      # from the box/bar/violin/scatter options above (which put the
+      # group on the x-axis).
+      p <- ggplot(ad, aes(x = value, fill = group, color = group)) +
+        geom_density(alpha = 0.35, linewidth = 0.8) +
+        labs(x = y_lab, y = "Density", fill = x_lab, color = x_lab,
+             title = "Group comparison", subtitle = "Overlaid distribution density per group")
     } else {
       p <- ggplot(ad, aes(x = group, y = value, fill = group)) +
         geom_boxplot(alpha = 0.5, outlier.shape = NA, width = bw) +
@@ -1227,15 +1339,23 @@ server <- function(input, output, session) {
 
     p <- p +
       theme_minimal(base_size = input$text_size) +
-      theme(legend.position = "none") +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$group))) +
-      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+      get_color_scale(input$palette, get_custom_colors(levels(ad$group))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines) +
-      log_y_scale(input$log_y_axis)
+      extra_style_theme(input$axis_color, input$hide_gridlines)
+
+    if (chart_type == "density") {
+      p <- p + theme(legend.position = "right")
+      if (isTRUE(input$log_y_axis)) p <- p + scale_x_log10()  # log the measured value, now on the x-axis
+    } else {
+      p <- p +
+        theme(legend.position = "none") +
+        scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+        log_y_scale(input$log_y_axis)
+    }
 
     n <- n_groups()
-    if (isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
+    if (chart_type != "density" && isTRUE(input$show_pvalues) && n >= 2 && n <= 4) {
       pw <- pairwise_pvalues()
       if (nrow(pw) > 0) {
         comparisons <- Map(c, pw$group1, pw$group2)
@@ -1266,9 +1386,11 @@ server <- function(input, output, session) {
     pt_size <- input$point_size %||% 2
     bw <- input$box_width %||% 0.6
 
-    if ((input$chart_type %||% "box") == "bar") {
-      ds2 <- ad %>% group_by(factor1, factor2) %>%
-        summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+    chart_type <- input$chart_type %||% "box"
+    ds2 <- ad %>% group_by(factor1, factor2) %>%
+      summarise(mean = mean(value), se = sd(value) / sqrt(n()), .groups = "drop")
+
+    if (chart_type == "bar") {
       p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
         geom_col(data = ds2, aes(x = factor1, y = mean, fill = factor2),
                  position = position_dodge(width = 0.75), width = bw, alpha = 0.7) +
@@ -1278,6 +1400,28 @@ server <- function(input, output, session) {
                    size = pt_size, alpha = 0.6, color = "#2C3E50") +
         labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
              title = "Two-way comparison", subtitle = "Bar height = mean, error bar = SE")
+    } else if (chart_type == "violin") {
+      p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
+        geom_violin(alpha = 0.5, position = position_dodge(width = 0.75), width = bw, trim = FALSE) +
+        geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
+                   size = pt_size, alpha = 0.6, color = "#2C3E50") +
+        labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2",
+             title = "Two-way comparison", subtitle = "Violin plot grouped by factor 1, colored by factor 2")
+    } else if (chart_type == "scatter") {
+      p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2, color = factor2)) +
+        geom_point(position = position_jitterdodge(jitter.width = 0.1, dodge.width = 0.75),
+                   size = pt_size, alpha = 0.8) +
+        geom_errorbar(data = ds2, aes(x = factor1, y = mean, ymin = mean - se, ymax = mean + se, group = factor2),
+                      position = position_dodge(width = 0.75), width = 0.1, color = "#C0392B", linewidth = 0.7) +
+        labs(x = x_lab, y = y_lab, fill = input$factor2_col %||% "Factor 2", color = input$factor2_col %||% "Factor 2",
+             title = "Two-way comparison", subtitle = "Scatter/dot plot grouped by factor 1, colored by factor 2")
+    } else if (chart_type == "density") {
+      p <- ggplot(ad, aes(x = value, fill = factor2, color = factor2)) +
+        geom_density(alpha = 0.35, linewidth = 0.8) +
+        facet_wrap(~ factor1, scales = "free") +
+        labs(x = y_lab, y = "Density", fill = input$factor2_col %||% "Factor 2",
+             color = input$factor2_col %||% "Factor 2",
+             title = "Two-way comparison", subtitle = "Density per factor 2 level, faceted by factor 1")
     } else {
       p <- ggplot(ad, aes(x = factor1, y = value, fill = factor2)) +
         geom_boxplot(alpha = 0.6, outlier.shape = NA, position = position_dodge(width = 0.75), width = bw) +
@@ -1287,13 +1431,21 @@ server <- function(input, output, session) {
              title = "Two-way comparison", subtitle = "Grouped by factor 1, colored by factor 2")
     }
 
-    p +
+    p <- p +
       theme_minimal(base_size = input$text_size) +
       get_fill_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
-      scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+      get_color_scale(input$palette, get_custom_colors(levels(ad$factor2))) +
       axis_angle_theme(input$axis_angle) +
-      extra_style_theme(input$axis_color, input$hide_gridlines) +
-      log_y_scale(input$log_y_axis)
+      extra_style_theme(input$axis_color, input$hide_gridlines)
+
+    if (chart_type == "density") {
+      if (isTRUE(input$log_y_axis)) p <- p + scale_x_log10()
+      p
+    } else {
+      p +
+        scale_x_discrete(expand = expansion(mult = input$category_spacing %||% 0.1)) +
+        log_y_scale(input$log_y_axis)
+    }
   }
 
   make_corr_plot <- function() {
@@ -1326,6 +1478,224 @@ server <- function(input, output, session) {
     }
   }
 
+  # =========================================================
+  # Auto-generated plain-language summary (rule-based, no AI)
+  # =========================================================
+  generate_summary_groups_one <- function() {
+    ad <- analysis_data(); tr <- test_result(); ds <- desc_stats(); alpha <- input$alpha
+    val_col <- input$value_col %||% "the measurement"
+    group_desc <- paste(sprintf("%s (n=%d)", ds$group, ds$n), collapse = ", ")
+    n_grp <- n_groups()
+
+    if (tr$type == "t-test") {
+      test_name <- if (isTRUE(input$paired)) "paired t-test"
+                   else if (isTRUE(input$equal_var)) "Student's t-test"
+                   else "Welch's t-test"
+      p <- tr$result$p.value
+      sig <- if (p < alpha) "a statistically significant difference" else "no statistically significant difference"
+      sprintf("A %s compared %s between %s. There was %s (%s).",
+              test_name, val_col, group_desc, sig, fmt_p_clause(p))
+    } else if (tr$type == "wilcoxon") {
+      p <- tr$result$p.value
+      sig <- if (p < alpha) "a statistically significant difference" else "no statistically significant difference"
+      sprintf("A Wilcoxon rank-sum test compared %s between %s. There was %s (%s).",
+              val_col, group_desc, sig, fmt_p_clause(p))
+    } else if (tr$type == "anova") {
+      fs <- summary(tr$result)[[1]]
+      f_val <- fs[["F value"]][1]; p <- fs[["Pr(>F)"]][1]
+      sig <- if (p < alpha) "a statistically significant difference" else "no statistically significant difference"
+      base <- sprintf("A one-way ANOVA compared %s across %d groups (%s). There was %s among groups (F = %.2f, %s).",
+                       val_col, n_grp, group_desc, sig, f_val, fmt_p_clause(p))
+      if (p < alpha) {
+        pw <- extract_pairwise(tr, levels(ad$group))
+        sig_pairs <- pw[pw$p < alpha, ]
+        method_lbl <- posthoc_label(current_posthoc_method())
+        if (nrow(sig_pairs) > 0) {
+          pair_strs <- sprintf("%s vs %s (%s)", sig_pairs$group1, sig_pairs$group2, sapply(sig_pairs$p, fmt_p_clause))
+          base <- paste0(base, " Post-hoc comparisons (", method_lbl, ") showed significant differences for ",
+                         paste(pair_strs, collapse = "; "), ".")
+        } else {
+          base <- paste0(base, " However, no individual pairwise comparisons reached significance after correction (",
+                         method_lbl, ").")
+        }
+      }
+      base
+    } else if (tr$type == "kruskal") {
+      p <- tr$result$p.value; stat <- unname(tr$result$statistic)
+      sig <- if (p < alpha) "a statistically significant difference" else "no statistically significant difference"
+      base <- sprintf("A Kruskal-Wallis test compared %s across %d groups (%s). There was %s among groups (chi-squared = %.2f, %s).",
+                       val_col, n_grp, group_desc, sig, stat, fmt_p_clause(p))
+      if (p < alpha) {
+        pw <- extract_pairwise(tr, levels(ad$group))
+        sig_pairs <- pw[pw$p < alpha, ]
+        method_lbl <- posthoc_label(current_posthoc_method())
+        if (nrow(sig_pairs) > 0) {
+          pair_strs <- sprintf("%s vs %s (%s)", sig_pairs$group1, sig_pairs$group2, sapply(sig_pairs$p, fmt_p_clause))
+          base <- paste0(base, " Post-hoc comparisons (", method_lbl, ") showed significant differences for ",
+                         paste(pair_strs, collapse = "; "), ".")
+        } else {
+          base <- paste0(base, " However, no individual pairwise comparisons reached significance after correction (",
+                         method_lbl, ").")
+        }
+      }
+      base
+    } else {
+      "Could not generate a summary for this result."
+    }
+  }
+
+  generate_summary_groups_two <- function() {
+    fit <- two_way_fit(); s <- summary(fit)[[1]]; alpha <- input$alpha
+    f1 <- input$factor1_col %||% "Factor 1"; f2 <- input$factor2_col %||% "Factor 2"
+    val_col <- input$value_col_2f %||% "the measurement"
+    p_f1 <- s[["Pr(>F)"]][1]; p_f2 <- s[["Pr(>F)"]][2]; p_int <- s[["Pr(>F)"]][3]
+    sig_txt <- function(p) if (p < alpha) "a statistically significant" else "no statistically significant"
+
+    base <- sprintf(
+      "A two-way ANOVA examined the effects of %s and %s on %s. There was %s main effect of %s (%s), %s main effect of %s (%s), and %s interaction between %s and %s (%s).",
+      f1, f2, val_col,
+      sig_txt(p_f1), f1, fmt_p_clause(p_f1),
+      sig_txt(p_f2), f2, fmt_p_clause(p_f2),
+      sig_txt(p_int), f1, f2, fmt_p_clause(p_int)
+    )
+    if (p_int < alpha) {
+      base <- paste0(base, sprintf(
+        " Because the interaction was significant, the main effects of %s and %s should be interpreted with caution, as the effect of one factor depends on the level of the other.",
+        f1, f2))
+    }
+    base
+  }
+
+  generate_summary_corr <- function() {
+    cd <- corr_data(); method <- input$corr_method %||% "pearson"; alpha <- input$alpha
+    ct <- cor.test(cd$x, cd$y, method = method)
+    r <- unname(ct$estimate); p <- ct$p.value
+    direction <- if (r > 0) "positive" else "negative"
+    strength <- if (abs(r) < 0.3) "weak" else if (abs(r) < 0.6) "moderate" else "strong"
+    sig_txt <- if (p < alpha) "statistically significant" else "not statistically significant"
+    method_lbl <- if (method == "pearson") "Pearson" else "Spearman"
+
+    base <- sprintf(
+      "A %s correlation test examined the relationship between %s and %s (n = %d). There was a %s %s correlation (r = %.2f, %s), which was %s.",
+      method_lbl, input$x_col %||% "X", input$y_col %||% "Y", nrow(cd), strength, direction, r, fmt_p_clause(p), sig_txt
+    )
+    if (isTRUE(input$show_regression)) {
+      fit <- lm(y ~ x, data = cd); s <- summary(fit)
+      base <- paste0(base, sprintf(
+        " A linear regression indicated that %s explained %.1f%% of the variance in %s (R-squared = %.3f).",
+        input$x_col %||% "X", s$r.squared * 100, input$y_col %||% "Y", s$r.squared))
+    }
+    base
+  }
+
+  generate_summary_survival <- function() {
+    sd <- surv_data(); alpha <- input$alpha
+    n_total <- nrow(sd); n_events <- sum(sd$status == 1)
+
+    if (nlevels(sd$group) > 1) {
+      test <- survival::survdiff(survival::Surv(time, status) ~ group, data = sd)
+      p <- 1 - pchisq(test$chisq, length(test$n) - 1)
+      sig_txt <- if (p < alpha) "a statistically significant" else "no statistically significant"
+      grp_summary <- sd %>% group_by(group) %>% summarise(n = n(), events = sum(status == 1), .groups = "drop")
+      grp_txt <- paste(sprintf("%s (n=%d, %d events)", grp_summary$group, grp_summary$n, grp_summary$events), collapse = ", ")
+      sprintf("A Kaplan-Meier survival analysis compared %s. A log-rank test found %s difference in survival between groups (chi-squared = %.2f, %s).",
+              grp_txt, sig_txt, test$chisq, fmt_p_clause(p))
+    } else {
+      sprintf("A Kaplan-Meier survival analysis was performed on %d subjects (%d events, %d censored).",
+              n_total, n_events, n_total - n_events)
+    }
+  }
+
+  generate_summary_titration <- function() {
+    tf <- titration_fits()
+    lines <- apply(tf, 1, function(row) {
+      sprintf("%s (EC50 = %s, R-squared = %s)", row[["group"]], row[["EC50"]], row[["R2"]])
+    })
+    paste0("A four-parameter logistic curve was fit to the dose-response data for: ", paste(lines, collapse = "; "), ".")
+  }
+
+  generate_auto_summary <- function() {
+    if (input$analysis_mode == "groups") {
+      if (input$group_design == "two") generate_summary_groups_two() else generate_summary_groups_one()
+    } else if (input$analysis_mode == "corr") {
+      generate_summary_corr()
+    } else if (input$analysis_mode == "survival") {
+      generate_summary_survival()
+    } else {
+      generate_summary_titration()
+    }
+  }
+
+  output$auto_summary <- renderText({ generate_auto_summary() })
+
+  # =========================================================
+  # Optional AI polish via the Claude API (requires an
+  # ANTHROPIC_API_KEY environment variable set on the server --
+  # never hardcode a key in this file, since it is in a public repo)
+  # =========================================================
+  output$claude_key_missing <- reactive({ if (nzchar(Sys.getenv("ANTHROPIC_API_KEY"))) "no" else "yes" })
+  outputOptions(output, "claude_key_missing", suspendWhenHidden = FALSE)
+
+  polished_text  <- reactiveVal(NULL)
+  polish_error   <- reactiveVal(NULL)
+
+  observeEvent(input$polish_btn, {
+    polished_text(NULL)
+    polish_error(NULL)
+
+    api_key <- Sys.getenv("ANTHROPIC_API_KEY")
+    if (!nzchar(api_key)) {
+      polish_error("No Claude API key is configured for this app.")
+      return()
+    }
+
+    summary_text <- tryCatch(generate_auto_summary(), error = function(e) NULL)
+    if (is.null(summary_text)) {
+      polish_error("Could not generate a summary to polish -- check the Test Results tab for errors first.")
+      return()
+    }
+
+    result <- tryCatch({
+      req <- httr2::request("https://api.anthropic.com/v1/messages") %>%
+        httr2::req_headers(
+          `x-api-key` = api_key,
+          `anthropic-version` = "2023-06-01",
+          `content-type` = "application/json"
+        ) %>%
+        httr2::req_body_json(list(
+          model = "claude-haiku-5-5",
+          max_tokens = 300,
+          messages = list(list(
+            role = "user",
+            content = paste0(
+              "Rewrite the following statistical results summary in clear, natural, polished prose suitable for ",
+              "a lab notebook or a manuscript results section. Do not change, add, or remove any numbers, ",
+              "p-values, or conclusions -- only improve the phrasing and flow. Keep it to one short paragraph ",
+              "and return only the rewritten paragraph, nothing else.\n\n", summary_text
+            )
+          ))
+        ))
+      resp <- httr2::req_perform(req)
+      body <- httr2::resp_body_json(resp)
+      body$content[[1]]$text
+    }, error = function(e) {
+      polish_error(paste("Could not reach Claude:", conditionMessage(e)))
+      NULL
+    })
+
+    if (!is.null(result)) polished_text(result)
+  })
+
+  output$polished_summary_ui <- renderUI({
+    if (!is.null(polish_error())) {
+      return(div(style = "color:#a33;", polish_error()))
+    }
+    if (!is.null(polished_text())) {
+      return(div(polished_text()))
+    }
+    helpText("Click \"Polish with Claude\" above to generate a more natural-language version of the summary.")
+  })
+
   output$main_plot <- renderPlot(
     { make_plot() },
     width  = function() input$plot_width_px %||% 800,
@@ -1356,6 +1726,14 @@ server <- function(input, output, session) {
     content  = function(file) {
       d <- export_dimensions()
       ggsave(file, plot = make_plot(), width = d$w, height = d$h, device = "svg")
+    }
+  )
+
+  output$download_plot_eps <- downloadHandler(
+    filename = function() "lab_stats_plot.eps",
+    content  = function(file) {
+      d <- export_dimensions()
+      ggsave(file, plot = make_plot(), width = d$w, height = d$h, device = "eps")
     }
   )
 
