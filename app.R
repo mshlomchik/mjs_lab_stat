@@ -239,6 +239,9 @@ ui <- page_sidebar(
   title = "Lab Stats Explorer",
   theme = bs_theme(version = 5, primary = "#2C6E49", base_font = font_google("Inter"),
                     font_size_base = "0.85rem"),
+  tags$head(tags$style(HTML(
+    "pre { white-space: pre-wrap; word-wrap: break-word; overflow-wrap: break-word; max-width: 100%; }"
+  ))),
 
   sidebar = sidebar(
     width = 400,
@@ -294,24 +297,8 @@ ui <- page_sidebar(
                               "Density plot" = "density"),
                   selected = "box")
     ),
-    sliderInput("point_size",
-                tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
-                min = 0.5, max = 6, value = 2, step = 0.5),
-    conditionalPanel(
-      "input.analysis_mode == 'groups'",
-      sliderInput("box_width",
-                  tooltip_label("Box/Bar width", "Width of each individual box or bar."),
-                  min = 0.2, max = 0.9, value = 0.6, step = 0.05),
-      sliderInput("category_spacing",
-                  tooltip_label("Space between groups", "Controls the gap left on either side of the groups and between them, independent of box/bar width. Lower = groups pulled closer together; higher = more spread out."),
-                  min = 0, max = 0.4, value = 0.1, step = 0.05)
-    ),
-    sliderInput("plot_width_px",
-                tooltip_label("Plot width (pixels)", "Overall width of the plot. Narrowing this (along with a smaller box/bar width) keeps things looking compact instead of scattered."),
-                min = 400, max = 1400, value = 800, step = 50),
-    sliderInput("plot_height_px",
-                tooltip_label("Plot height (pixels)", "Overall height of the plot."),
-                min = 300, max = 900, value = 500, step = 50),
+    helpText("Plot width, height, point size, and box/bar spacing are ",
+             "controlled from the Plot tab itself, next to the plot."),
     colourpicker::colourInput("axis_color",
                                tooltip_label("Axis color", "Color of the axis lines, ticks, and text."),
                                value = "#000000"),
@@ -431,6 +418,36 @@ ui <- page_sidebar(
 
     nav_panel(
       "Plot",
+      accordion(
+        open = FALSE,
+        accordion_panel(
+          "Plot size & spacing",
+          layout_column_wrap(
+            width = "200px",
+            sliderInput("plot_width_px",
+                        tooltip_label("Plot width (pixels)", "Overall width of the plot. Narrowing this (along with a smaller box/bar width) keeps things looking compact instead of scattered."),
+                        min = 400, max = 1400, value = 800, step = 50),
+            sliderInput("plot_height_px",
+                        tooltip_label("Plot height (pixels)", "Overall height of the plot."),
+                        min = 300, max = 900, value = 500, step = 50),
+            sliderInput("point_size",
+                        tooltip_label("Point size", "Size of the individual data points/dots shown on the plot."),
+                        min = 0.5, max = 6, value = 2, step = 0.5),
+            conditionalPanel(
+              "input.analysis_mode == 'groups'",
+              sliderInput("box_width",
+                          tooltip_label("Box/Bar width", "Width of each individual box or bar."),
+                          min = 0.2, max = 0.9, value = 0.6, step = 0.05)
+            ),
+            conditionalPanel(
+              "input.analysis_mode == 'groups'",
+              sliderInput("category_spacing",
+                          tooltip_label("Space between groups", "Controls the gap left on either side of the groups and between them, independent of box/bar width. Lower = groups pulled closer together; higher = more spread out."),
+                          min = 0, max = 0.4, value = 0.1, step = 0.05)
+            )
+          )
+        )
+      ),
       plotOutput("main_plot"),
       tags$script(HTML("
         function copyPlotToClipboard() {
